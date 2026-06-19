@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Wishlists — public read, auth required for create/update/delete
+    match /wishlists/{wishlistId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasAll(['title', 'price', 'reason', 'upiId', 'creatorName', 'creatorUid', 'status', 'createdAt'])
+        && request.resource.data.creatorUid == request.auth.uid;
+      allow update: if request.auth != null
+        && resource.data.creatorUid == request.auth.uid;
+      allow delete: if request.auth != null
+        && resource.data.creatorUid == request.auth.uid;
+    }
+
+    // Contributions — public read, auth required for create, only wishlist creator can update status
+    match /contributions/{contributionId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasAll(['wishlistId', 'wishlistCreatorUid', 'amount', 'contributorName', 'status', 'createdAt']);
+      allow update: if request.auth != null
+        && resource.data.wishlistCreatorUid == request.auth.uid;
+    }
+
+    // Notifications — only the target user can read
+    match /notifications/{notificationId} {
+      allow read: if request.auth != null
+        && resource.data.toUid == request.auth.uid;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null
+        && resource.data.toUid == request.auth.uid;
+    }
+
+    // Users — public read (avatars/names), only owner can write
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Reports — only reporter can read their own, auth required to create
+    match /reports/{reportId} {
+      allow read: if request.auth != null
+        && resource.data.reportedBy == request.auth.uid;
+      allow create: if request.auth != null;
+    }
+  }
+}
