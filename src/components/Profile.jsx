@@ -2,7 +2,6 @@ import { useState, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
 import { subscribeMyWishlists, subscribePendingForUser, signOutUser, confirmContribution, rejectContribution, formatTime } from '../firebase';
-import EditProfileModal from './EditProfileModal';
 import DonateModal from './DonateModal';
 import ReportModal from './ReportModal';
 export default function Profile() {
@@ -15,7 +14,6 @@ export default function Profile() {
   const [pending, setPending] = useState([]);
   const [pendingLoading, setPendingLoading] = useState(true);
   const [tab, setTab] = useState('active');
-  const [showEdit, setShowEdit] = useState(false);
   const [showDonate, setShowDonate] = useState(null);
   const [reportData, setReportData] = useState(null);
 
@@ -67,7 +65,6 @@ export default function Profile() {
               <div className="profile-stat"><div className="profile-stat-value">{completed.length}</div><div className="profile-stat-label">Completed</div></div>
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
-              <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>✏️ Edit Profile</button>
               <button className="btn btn-outline btn-sm" style={{ color: 'var(--color-error)' }} onClick={handleSignOut}>🚪 Sign Out</button>
             </div>
         {pendingLoading ? (
@@ -153,7 +150,6 @@ export default function Profile() {
         </div>
       </section>
 
-      {showEdit && <EditProfileModal onClose={() => setShowEdit(false)} onSave={fetchData} />}
       {showDonate && <DonateModal wishlistId={showDonate} onClose={() => setShowDonate(null)} />}
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}
     </main>

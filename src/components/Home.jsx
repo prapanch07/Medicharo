@@ -1,7 +1,7 @@
 import { useState, useEffect, useContext, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
-import { getStats, subscribeWishlists, formatTime } from '../firebase';
+import { subscribeWishlists, formatTime } from '../firebase';
 import DonateModal from './DonateModal';
 import LoginModal from './LoginModal';
 
@@ -12,8 +12,6 @@ export default function Home() {
   const showToast = useContext(ToastContext);
   const navigate = useNavigate();
 
-  const [stats, setStats] = useState(null);
-  const [statsLoading, setStatsLoading] = useState(true);
   const [wl, setWl] = useState([]);
   const [wlLoading, setWlLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -23,9 +21,12 @@ export default function Home() {
   const [showLogin, setShowLogin] = useState(false);
   const [pendingLogin, setPendingLogin] = useState(null);
 
-  useEffect(() => {
-    getStats().then(s => { setStats(s); setStatsLoading(false); }).catch(() => setStatsLoading(false));
-  }, []);
+  const stats = useMemo(() => ({
+    totalWishes: wl.length,
+    activeWishes: wl.filter(w => w.status === 'active' || !w.status).length,
+    completedWishes: wl.filter(w => w.status === 'completed').length,
+    totalRaised: wl.reduce((s, w) => s + (w.raised || 0), 0)
+  }), [wl]);
 
   useEffect(() => {
     const unsub = subscribeWishlists(list => {
@@ -83,9 +84,9 @@ export default function Home() {
               {!user && <button className="btn btn-outline btn-lg" onClick={() => { setPendingLogin('create'); setShowLogin(true); }}>Sign In to Create</button>}
             </div>
           </div>
-          {statsLoading ? (
+          {wlLoading ? (
             <div className="loader-inline" style={{ justifyContent: 'center', padding: '2rem' }}><span className="spinner"></span> Loading stats...</div>
-          ) : stats ? (
+          ) : (
             <div className="hero-stats animate-on-enter">
               <div className="hero-stat">
                 <div className="hero-stat-value">{stats.totalWishes}</div>
@@ -100,7 +101,7 @@ export default function Home() {
                 <div className="hero-stat-label">Fulfilled</div>
               </div>
             </div>
-          ) : null}
+          )}
         </div>
       </section>
 

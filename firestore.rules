@@ -2,6 +2,22 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ═══════════════════════════════════════════════
+    // REQUIRED COMPOSITE INDEXES (create in Firebase Console)
+    // ═══════════════════════════════════════════════
+    //
+    // Collection: notifications
+    //   Fields: toUid ASC, createdAt DESC  →  for subscribeNotifications
+    //   Fields: toUid ASC, read ASC       →  for subscribeUnreadCount
+    //
+    // Collection: wishlists
+    //   Fields: creatorUid ASC, createdAt DESC  →  for subscribeMyWishlists
+    //
+    // Collection: contributions
+    //   Fields: wishlistId ASC, createdAt DESC  →  for subscribeContributions
+    //   Fields: wishlistCreatorUid ASC, status ASC, createdAt DESC  →  for subscribePendingForUser
+    // ═══════════════════════════════════════════════
+
     // Wishlists — public read, auth required for create/update/delete
     match /wishlists/{wishlistId} {
       allow read: if true;

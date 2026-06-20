@@ -16,6 +16,7 @@ export default function CreateWishlist() {
   const [reason, setReason] = useState('');
   const [image, setImage] = useState('');
   const [imageFile, setImageFile] = useState(null);
+  const [upiId, setUpiId] = useState(user?.upiId || '');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   if (!user) {
@@ -49,14 +50,10 @@ export default function CreateWishlist() {
     if (!p || p <= 0) { setError('Enter a valid price.'); return; }
     if (!category) { setError('Select a category.'); return; }
     if (!reason || reason.length < 10) { setError('Tell your story (min 10 chars).'); return; }
-    if (!user.upiId?.includes('@')) {
-      const upi = prompt('Enter your UPI ID (e.g., name@upi):');
-      if (!upi || !upi.includes('@')) { setError('Enter a valid UPI ID.'); return; }
-      user.upiId = upi;
-    }
+    if (!upiId || !upiId.includes('@')) { setError('Enter a valid UPI ID.'); return; }
     setSubmitting(true);
     try {
-      await createWishlist({ title: title.trim(), price: p, category, reason: reason.trim(), upiId: user.upiId, creatorName: user.name, productLink: link, image });
+      await createWishlist({ title: title.trim(), price: p, category, reason: reason.trim(), upiId, creatorName: user.name, productLink: link, image });
       showToast('🎉 Wishlist created! Share it with your community.', 'success');
       setTimeout(() => navigate('/'), 1500);
     } catch (err) {
@@ -125,6 +122,10 @@ export default function CreateWishlist() {
               <div className="form-group">
                 <label className="form-label">Your Name <span style={{ color: 'var(--color-error)' }}>*</span></label>
                 <input className="form-input" type="text" value={user.name} disabled />
+              </div>
+              <div className="form-group">
+                <label className="form-label">UPI ID <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                <input className="form-input" type="text" placeholder="e.g., name@paytm" value={upiId} onChange={e => setUpiId(e.target.value)} required />
               </div>
             </div>
             <button type="submit" className="btn btn-primary btn-lg btn-full animate-on-enter" disabled={submitting} style={{ fontSize: 'var(--text-base)' }}>

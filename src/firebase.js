@@ -54,16 +54,6 @@ export function getCurrentUser() {
 }
 
 // --- Wishlists ---
-export async function getWishlists() {
-  const snap = await getDocs(collection(db, 'wishlists'));
-  const list = snapToArray(snap);
-  list.sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
-    return tb - ta;
-  });
-  return list;
-}
 export async function getWishlist(id) {
   const d = await getDoc(doc(db, 'wishlists', id));
   return docToObj(d);
@@ -87,17 +77,6 @@ export async function createWishlist(data) {
 }
 export async function updateWishlist(id, updates) { await updateDoc(doc(db, 'wishlists', id), updates); }
 export async function deleteWishlist(id) { await deleteDoc(doc(db, 'wishlists', id)); }
-export async function getMyWishlists(uid) {
-  if (!uid) return [];
-  const snap = await getDocs(query(collection(db, 'wishlists'), where('creatorUid', '==', uid)));
-  const list = snapToArray(snap);
-  list.sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
-    return tb - ta;
-  });
-  return list;
-}
 
 // --- Contributions ---
 export async function addContribution(wishlistId, { amount, name, message }) {
@@ -159,39 +138,8 @@ export async function rejectContribution(contribId, wishlistId) {
     });
   }
 }
-export async function getContributions(wishlistId) {
-  const snap = await getDocs(query(collection(db, 'contributions'), where('wishlistId', '==', wishlistId)));
-  const list = snapToArray(snap);
-  list.sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
-    return tb - ta;
-  });
-  return list;
-}
-export async function getPendingForUser(uid) {
-  if (!uid) return [];
-  const wl = await getMyWishlists(uid);
-  const ids = wl.map(w => w.id);
-  if (ids.length === 0) return [];
-  if (ids.length <= 10) {
-    const snap = await getDocs(query(collection(db, 'contributions'), where('wishlistId', 'in', ids), where('status', '==', 'pending')));
-    return snapToArray(snap);
-  }
-  const all = [];
-  for (let i = 0; i < ids.length; i += 10) {
-    const snap = await getDocs(query(collection(db, 'contributions'), where('wishlistId', 'in', ids.slice(i, i + 10)), where('status', '==', 'pending')));
-    all.push(...snapToArray(snap));
-  }
-  return all;
-}
 
 // --- Notifications ---
-export async function getNotifications(uid) {
-  if (!uid) return [];
-  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid), orderBy('createdAt', 'desc')));
-  return snapToArray(snap);
-}
 export async function markNotificationRead(id) {
   await updateDoc(doc(db, 'notifications', id), { read: true });
 }
@@ -200,11 +148,6 @@ export async function markAllNotificationsRead(uid) {
   const batch = writeBatch(db);
   snap.forEach(d => batch.update(d.ref, { read: true }));
   await batch.commit();
-}
-export async function getUnreadCount(uid) {
-  if (!uid) return 0;
-  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false)));
-  return snap.size;
 }
 
 // --- Reports ---
@@ -229,22 +172,6 @@ export async function getCreatorDisplay(uid) {
 }
 export async function saveUserProfile(uid, data) {
   await setDoc(doc(db, 'users', uid), data, { merge: true });
-}
-
-// --- Stats ---
-export async function getStats() {
-  const [wlSnap, cSnap] = await Promise.all([
-    getDocs(collection(db, 'wishlists')),
-    getDocs(collection(db, 'contributions'))
-  ]);
-  const wl = snapToArray(wlSnap);
-  return {
-    totalWishes: wl.length,
-    activeWishes: wl.filter(w => w.status === 'active' || !w.status).length,
-    completedWishes: wl.filter(w => w.status === 'completed').length,
-    totalRaised: wl.reduce((s, w) => s + (w.raised || 0), 0),
-    contributorCount: cSnap.size
-  };
 }
 
 // --- Auto-confirm stale (>24h) ---
@@ -284,19 +211,21 @@ export async function autoConfirmStale() {
 }
 
 // --- Real-time subscriptions ---
+function onError(err) { console.error('sub err', err); }
+
 export function subscribeNotifications(uid, callback) {
   if (!uid) return () => {};
   const q = query(collection(db, 'notifications'), where('toUid', '==', uid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => callback(snapToArray(snap)), err => { console.error('notif sub err', err); callback([]); });
+  return onSnapshot(q, snap => callback(snapToArray(snap)), err => { onError(err); callback([]); });
 }
 export function subscribeUnreadCount(uid, callback) {
   if (!uid) return () => {};
   const q = query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false));
-  return onSnapshot(q, snap => callback(snap.size));
+  return onSnapshot(q, snap => callback(snap.size), err => { onError(err); callback(0); });
 }
 export function subscribeWishlists(callback) {
   const q = query(collection(db, 'wishlists'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => callback(snapToArray(snap)));
+  return onSnapshot(q, snap => callback(snapToArray(snap)), err => { onError(err); callback([]); });
 }
 export function subscribeMyWishlists(uid, callback) {
   if (!uid) return () => {};
@@ -309,11 +238,11 @@ export function subscribeMyWishlists(uid, callback) {
       return tb - ta;
     });
     callback(list);
-  });
+  }, err => { onError(err); callback([]); });
 }
 export function subscribeWishlist(id, callback) {
   if (!id) return () => {};
-  return onSnapshot(doc(db, 'wishlists', id), snap => callback(docToObj(snap)));
+  return onSnapshot(doc(db, 'wishlists', id), snap => callback(docToObj(snap)), err => { onError(err); callback(null); });
 }
 export function subscribeContributions(wishlistId, callback) {
   if (!wishlistId) return () => {};
@@ -326,7 +255,7 @@ export function subscribeContributions(wishlistId, callback) {
       return tb - ta;
     });
     callback(list);
-  });
+  }, err => { onError(err); callback([]); });
 }
 export function subscribePendingForUser(uid, callback) {
   if (!uid) return () => {};
@@ -339,7 +268,7 @@ export function subscribePendingForUser(uid, callback) {
       return tb - ta;
     });
     callback(list);
-  });
+  }, err => { onError(err); callback([]); });
 }
 
 export { auth, db, formatTime };

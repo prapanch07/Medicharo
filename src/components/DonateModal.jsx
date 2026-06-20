@@ -15,6 +15,7 @@ export default function DonateModal({ wishlistId, onClose }) {
   const [donorName, setDonorName] = useState(user?.name || '');
   const [message, setMessage] = useState('');
   const [qrImg, setQrImg] = useState('');
+  const [upiUrl, setUpiUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -39,9 +40,11 @@ export default function DonateModal({ wishlistId, onClose }) {
     if (amount > rem) { setError('Only ₹' + rem.toLocaleString('en-IN') + ' remaining!'); return; }
     setError('');
     const upiStr = 'upi://pay?pa=' + encodeURIComponent(w.upiId) + '&pn=' + encodeURIComponent(w.creatorName || '') + '&am=' + amount + '&cu=INR&tn=' + encodeURIComponent('Contribution to ' + w.title);
+    setUpiUrl(upiStr);
     QRCode.toDataURL(upiStr, { width: 256, margin: 1 }).then(url => {
       setQrImg(url);
       setStep('qr');
+      setTimeout(() => { window.location.href = upiStr; }, 300);
     }).catch(() => setQrImg(''));
   };
 
@@ -55,21 +58,6 @@ export default function DonateModal({ wishlistId, onClose }) {
     } catch (err) {
       showToast(err.message || 'Error submitting payment', 'error');
       setSubmitting(false);
-    }
-  };
-
-  const copyUpi = async () => {
-    try {
-      await navigator.clipboard.writeText(w.upiId);
-      const btn = document.getElementById('copyUpiBtn');
-      if (btn) { btn.textContent = '✅ Copied!'; setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000); }
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = w.upiId;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
     }
   };
 
@@ -109,13 +97,6 @@ export default function DonateModal({ wishlistId, onClose }) {
                 </div>
                 <div className="form-group">
                   <div className="label-row">
-                    <label className="form-label">Your Name</label>
-                    <span className="help-icon" data-tip="Your name appears in the contributors list. Leave blank for anonymous.">!</span>
-                  </div>
-                  <input className="form-input" type="text" placeholder="How should we call you?" value={donorName} onChange={e => setDonorName(e.target.value)} />
-                </div>
-                <div className="form-group">
-                  <div className="label-row">
                     <label className="form-label">Message</label>
                     <span className="help-icon" data-tip="Leave a note for the creator. They'll see it when confirming!">!</span>
                   </div>
@@ -126,20 +107,22 @@ export default function DonateModal({ wishlistId, onClose }) {
           ) : (
             <div className="qr-screen">
               <div className="qr-success-badge">✅ Payment Link Generated</div>
-              <div className="qr-code-wrapper">{qrImg ? <img src={qrImg} alt="QR" className="qr-code-svg" /> : <div style={{ padding: '1rem', color: 'var(--color-text-muted)' }}>Generating QR...</div>}</div>
+              <div className="qr-code-wrapper">
+                {qrImg ? <img src={qrImg} alt="QR" className="qr-code-svg" /> : <div style={{ padding: '1rem', color: 'var(--color-text-muted)' }}>Generating QR...</div>}
+              </div>
               <div className="qr-amount">₹{amount.toLocaleString('en-IN')}</div>
               <div className="qr-creator">for {w.creatorName}'s wishlist</div>
-              <div className="qr-upi-box">
-                <span className="qr-upi-id">{w.upiId}</span>
-                <button className="qr-copy-btn" id="copyUpiBtn" onClick={copyUpi}>📋 Copy</button>
-              </div>
+              <button className="btn btn-outline btn-sm" onClick={() => window.location.href = upiUrl} style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)' }}>
+                📱 Open UPI App
+              </button>
               <div className="qr-instructions">
-                <div className="qr-instructions-title">📱 How to Pay</div>
+                <div className="qr-instructions-title">📱 Scan to Pay</div>
+                <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-3)' }}>Open your UPI app and scan the QR code above</p>
                 <ol>
-                  <li>Open any UPI app</li>
-                  <li>Scan QR or enter UPI ID</li>
+                  <li>Open Google Pay / PhonePe / Paytm</li>
+                  <li>Tap scan QR and scan this code</li>
                   <li>Amount auto-fills: <strong>₹{amount.toLocaleString('en-IN')}</strong></li>
-                  <li>Complete payment</li>
+                  <li>Complete payment in your UPI app</li>
                   <li>Come back and tap <strong>"I've Paid"</strong></li>
                 </ol>
                 <div className="alert alert-warning" style={{ fontSize: 'var(--text-xs)', marginTop: 'var(--space-3)' }}>
