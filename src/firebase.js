@@ -6,7 +6,7 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc,
-  query, where, orderBy, serverTimestamp, writeBatch, onSnapshot
+  query, where, orderBy, serverTimestamp, writeBatch, onSnapshot, increment
 } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -106,6 +106,19 @@ export async function addContribution(wishlistId, { amount, name, message }) {
   });
   return { id: ref.id, ...contrib };
 }
+
+export function subscribeReports(callback) {
+  const q = query(collection(db, 'reports'));
+  return onSnapshot(q, snap => {
+    const list = snapToArray(snap);
+    list.sort((a, b) => {
+      const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
+      const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
+      return tb - ta;
+    });
+    callback(list);
+  }, err => { onError(err); callback([]); });
+}
 export async function confirmContribution(contribId, wishlistId) {
   const cSnap = await getDoc(doc(db, 'contributions', contribId));
   const c = docToObj(cSnap);
@@ -120,7 +133,7 @@ export async function confirmContribution(contribId, wishlistId) {
     await setDoc(doc(collection(db, 'notifications')), {
       toUid: c.contributorUid, type: 'confirmed',
       fromName: w.creatorName, wishlistId, wishlistTitle: w.title,
-      amount: c.amount, read: false, createdAt: getServerTime()
+      contributionId: contribId, amount: c.amount, read: false, createdAt: getServerTime()
     });
   }
 }
@@ -144,19 +157,40 @@ export async function markNotificationRead(id) {
   await updateDoc(doc(db, 'notifications', id), { read: true });
 }
 export async function markAllNotificationsRead(uid) {
-  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false)));
+  if (!uid) return;
+  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid)));
   const batch = writeBatch(db);
-  snap.forEach(d => batch.update(d.ref, { read: true }));
+  snap.forEach(d => {
+    const data = d.data();
+    if (!data.read) batch.update(d.ref, { read: true });
+  });
   await batch.commit();
+}
+export async function getUnreadCount(uid) {
+  if (!uid) return 0;
+  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid)));
+  let count = 0;
+  snap.forEach(d => { if (!d.data().read) count++; });
+  return count;
 }
 
 // --- Reports ---
 export async function submitReport({ contributionId, wishlistId, reason, screenshot }) {
   const ref = doc(collection(db, 'reports'));
+  const [cSnap, wSnap] = await Promise.all([
+    getDoc(doc(db, 'contributions', contributionId)),
+    getDoc(doc(db, 'wishlists', wishlistId))
+  ]);
+  const c = docToObj(cSnap);
+  const w = docToObj(wSnap);
   await setDoc(ref, {
     contributionId, wishlistId,
     reason: reason.trim(), screenshot: screenshot || '',
     status: 'open', reportedBy: getCurrentUser()?.uid || null,
+    contributorName: c?.contributorName || 'Unknown',
+    wisherName: w?.creatorName || 'Unknown',
+    wisherUpiId: w?.upiId || '',
+    wisherUid: w?.creatorUid || '',
     createdAt: getServerTime()
   });
   return { id: ref.id };
@@ -195,7 +229,7 @@ export async function autoConfirmStale() {
       await setDoc(doc(collection(db, 'notifications')), {
         toUid: c.contributorUid, type: 'confirmed',
         fromName: 'System', wishlistId: c.wishlistId, wishlistTitle: w?.title || '',
-        amount: c.amount, read: false, createdAt: getServerTime()
+        contributionId: c.id, amount: c.amount, read: false, createdAt: getServerTime()
       });
     }
   }
@@ -215,13 +249,24 @@ function onError(err) { console.error('sub err', err); }
 
 export function subscribeNotifications(uid, callback) {
   if (!uid) return () => {};
-  const q = query(collection(db, 'notifications'), where('toUid', '==', uid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => callback(snapToArray(snap)), err => { onError(err); callback([]); });
+  const q = query(collection(db, 'notifications'), where('toUid', '==', uid));
+  return onSnapshot(q, snap => {
+    const list = snapToArray(snap);
+    list.sort((a, b) => {
+      const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
+      const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
+      return tb - ta;
+    });
+    callback(list);
+  }, err => { onError(err); callback([]); });
 }
 export function subscribeUnreadCount(uid, callback) {
   if (!uid) return () => {};
-  const q = query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false));
-  return onSnapshot(q, snap => callback(snap.size), err => { onError(err); callback(0); });
+  const q = query(collection(db, 'notifications'), where('toUid', '==', uid));
+  return onSnapshot(q, snap => {
+    const unread = snapToArray(snap).filter(n => !n.read);
+    callback(unread.length);
+  }, err => { onError(err); callback(0); });
 }
 export function subscribeWishlists(callback) {
   const q = query(collection(db, 'wishlists'), orderBy('createdAt', 'desc'));
@@ -271,4 +316,4 @@ export function subscribePendingForUser(uid, callback) {
   }, err => { onError(err); callback([]); });
 }
 
-export { auth, db, formatTime };
+export { auth, db, formatTime, updateDoc, doc, collection, getDoc, getDocs, serverTimestamp, writeBatch, getFirestore, increment, deleteDoc };

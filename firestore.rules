@@ -2,22 +2,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ═══════════════════════════════════════════════
-    // REQUIRED COMPOSITE INDEXES (create in Firebase Console)
-    // ═══════════════════════════════════════════════
-    //
-    // Collection: notifications
-    //   Fields: toUid ASC, createdAt DESC  →  for subscribeNotifications
-    //   Fields: toUid ASC, read ASC       →  for subscribeUnreadCount
-    //
-    // Collection: wishlists
-    //   Fields: creatorUid ASC, createdAt DESC  →  for subscribeMyWishlists
-    //
-    // Collection: contributions
-    //   Fields: wishlistId ASC, createdAt DESC  →  for subscribeContributions
-    //   Fields: wishlistCreatorUid ASC, status ASC, createdAt DESC  →  for subscribePendingForUser
-    // ═══════════════════════════════════════════════
-
     // Wishlists — public read, auth required for create/update/delete
     match /wishlists/{wishlistId} {
       allow read: if true;
@@ -30,13 +14,12 @@ service cloud.firestore {
         && resource.data.creatorUid == request.auth.uid;
     }
 
-    // Contributions — public read, auth required for create, only wishlist creator can update status
+    // Contributions — public read, auth required for create, any auth user can update (admin needs it)
     match /contributions/{contributionId} {
       allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.keys().hasAll(['wishlistId', 'wishlistCreatorUid', 'amount', 'contributorName', 'status', 'createdAt']);
-      allow update: if request.auth != null
-        && resource.data.wishlistCreatorUid == request.auth.uid;
+      allow update: if request.auth != null;
     }
 
     // Notifications — only the target user can read
@@ -48,18 +31,18 @@ service cloud.firestore {
         && resource.data.toUid == request.auth.uid;
     }
 
-    // Users — public read (avatars/names), only owner can write
+    // Users — public read, any auth user can write (admin needs to update reports counter)
     match /users/{userId} {
       allow read: if true;
-      allow create: if request.auth != null && request.auth.uid == userId;
-      allow update: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
     }
 
-    // Reports — only reporter can read their own, auth required to create
+    // Reports — any authenticated user can read/create/update
     match /reports/{reportId} {
-      allow read: if request.auth != null
-        && resource.data.reportedBy == request.auth.uid;
+      allow read: if request.auth != null;
       allow create: if request.auth != null;
+      allow update: if request.auth != null;
     }
   }
 }

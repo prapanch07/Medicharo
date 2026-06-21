@@ -1,7 +1,7 @@
 import { useState, useEffect, useContext } from 'react';
 import { Link } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
-import { subscribeNotifications, confirmContribution, rejectContribution, markNotificationRead, markAllNotificationsRead, formatTime } from '../firebase';
+import { subscribeNotifications, confirmContribution, rejectContribution, markNotificationRead, markAllNotificationsRead, formatTime, deleteDoc, doc, db } from '../firebase';
 import ReportModal from './ReportModal';
 
 export default function NotificationModal({ onClose }) {
@@ -24,14 +24,14 @@ export default function NotificationModal({ onClose }) {
     return unsub;
   }, [user]);
 
-  const handleConfirm = async (contribId, wlId) => {
-    try { await confirmContribution(contribId, wlId); showToast('✅ Payment confirmed!', 'success'); }
+  const handleConfirm = async (contribId, wlId, notifId) => {
+    try { await confirmContribution(contribId, wlId); await deleteDoc(doc(db, 'notifications', notifId)); showToast('✅ Payment confirmed!', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
   };
-  const handleReject = async (contribId, wlId) => {
+  const handleReject = async (contribId, wlId, notifId) => {
     if (!confirm('Reject this payment? The contributor will be notified.')) return;
-    try { await rejectContribution(contribId, wlId); showToast('Payment rejected', 'success'); }
+    try { await rejectContribution(contribId, wlId); await deleteDoc(doc(db, 'notifications', notifId)); showToast('Payment rejected', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
   };
@@ -67,8 +67,8 @@ export default function NotificationModal({ onClose }) {
                 </div>
                 {n.type === 'new_contribution' && (
                   <div className="confirm-actions" onClick={e => e.stopPropagation()}>
-                    <button className="btn btn-success btn-sm" onClick={() => handleConfirm(n.contributionId, n.wishlistId)} style={{ padding: '0.25rem 0.625rem', fontSize: '10px' }}>✅</button>
-                    <button className="btn btn-outline btn-sm" onClick={() => handleReject(n.contributionId, n.wishlistId)} style={{ padding: '0.25rem 0.625rem', fontSize: '10px', color: 'var(--color-error)' }}>✕</button>
+                    <button className="btn btn-success btn-sm" onClick={() => handleConfirm(n.contributionId, n.wishlistId, n.id)} style={{ padding: '0.25rem 0.625rem', fontSize: '10px' }}>✅</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => handleReject(n.contributionId, n.wishlistId, n.id)} style={{ padding: '0.25rem 0.625rem', fontSize: '10px', color: 'var(--color-error)' }}>✕</button>
                   </div>
                 )}
                 {n.type === 'rejected' && (

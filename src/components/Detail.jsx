@@ -166,15 +166,15 @@ export default function Detail() {
               <div className="sidebar-card-title">Recent Contributors ❤️</div>
               {wlLoading ? (
                 <div className="loader-inline"><span className="spinner"></span></div>
-              ) : contribs.filter(c => c.status !== 'rejected').length === 0 ? (
+              ) : contribs.filter(c => c.status === 'confirmed').length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--color-text-muted)', fontSize: 'var(--text-sm)' }}>
                   Be the first to contribute!
                 </div>
               ) : (
-                contribs.filter(c => c.status !== 'rejected').slice(0, 5).map(c => (
+                contribs.filter(c => c.status === 'confirmed').slice(0, 5).map(c => (
                   <div key={c.id} className="contribution-item">
                     <div className="contribution-info">
-                      <div className="contribution-name">{c.contributorName} {c.status === 'confirmed' ? '✅' : '⏳'}</div>
+                      <div className="contribution-name">{c.contributorName} ✅</div>
                       {c.message && <div className="contribution-message">{c.message}</div>}
                       <div className="contribution-time">{formatTime(c.createdAt)}</div>
                     </div>
