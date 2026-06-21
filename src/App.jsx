@@ -1,29 +1,41 @@
-import React, { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react';
-import { BrowserRouter, Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom';
-import { onAuthChanged, getCurrentUser, autoConfirmStale, subscribeUnreadCount, subscribeNotifications, getUnreadCount } from './firebase';
+import React, { useState, useEffect, useCallback, createContext, useRef, lazy, Suspense } from 'react';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { onAuthChanged, autoConfirmStale, subscribeNotifications } from './firebase';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Home from './components/Home';
-import Detail from './components/Detail';
-import Profile from './components/Profile';
-import CreateWishlist from './components/CreateWishlist';
-import NotificationsPage from './components/NotificationsPage';
-import AdminReport from './components/AdminReport';
 import Toast from './components/Toast';
 import Onboarding from './components/Onboarding';
+
+const Detail = lazy(() => import('./components/Detail'));
+const Profile = lazy(() => import('./components/Profile'));
+const CreateWishlist = lazy(() => import('./components/CreateWishlist'));
+const NotificationsPage = lazy(() => import('./components/NotificationsPage'));
+const AdminReport = lazy(() => import('./components/AdminReport'));
 
 export const UserContext = createContext(null);
 export const ToastContext = createContext(null);
 
+function RouteFallback() {
+  return (
+    <main id="main-content">
+      <div className="loader-inline" style={{ justifyContent: 'center', paddingTop: '120px' }}>
+        <span className="spinner"></span> Loading...
+      </div>
+    </main>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifications, setNotifications] = useState([]);
   const [toast, setToast] = useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('mc-theme') || 'light');
   const [notifPerm, setNotifPerm] = useState(localStorage.getItem('mc-notif-perm'));
 
   const lastNotifIdRef = useRef(null);
   const initialNotifLoadRef = useRef(true);
+  const toastTimerRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -33,16 +45,45 @@ export default function App() {
   const toggleTheme = useCallback(() => setTheme(t => t === 'light' ? 'dark' : 'light'), []);
 
   useEffect(() => {
-    let unsubUnread;
     const unsubAuth = onAuthChanged(u => {
       const usr = u ? { uid: u.uid, name: u.displayName || 'User', email: u.email, photo: u.photoURL } : null;
       setUser(usr);
-      if (unsubUnread) unsubUnread();
-      if (usr) unsubUnread = subscribeUnreadCount(usr.uid, setUnreadCount);
     });
-    autoConfirmStale().catch(() => {});
-    return () => { unsubAuth(); if (unsubUnread) unsubUnread(); };
+    return () => { unsubAuth(); };
   }, []);
+
+  useEffect(() => {
+    if (!user) { setNotifications([]); return; }
+    initialNotifLoadRef.current = true;
+    const unsub = subscribeNotifications(user.uid, list => {
+      setNotifications(list);
+      if (initialNotifLoadRef.current) {
+        initialNotifLoadRef.current = false;
+        if (list.length > 0) lastNotifIdRef.current = list[0].id;
+        return;
+      }
+      if (notifPerm !== 'granted' || list.length === 0) return;
+      const latest = list[0];
+      if (latest.id !== lastNotifIdRef.current) {
+        lastNotifIdRef.current = latest.id;
+        if (document.visibilityState === 'visible') return;
+        if (!('Notification' in window)) return;
+        const title = latest.type === 'new_contribution'
+          ? '💰 ' + latest.fromName + ' contributed!'
+          : (latest.type === 'confirmed' ? '✅ Payment confirmed' : '⚠️ Payment rejected');
+        try { new Notification(title, { body: '₹' + latest.amount + ' · ' + latest.wishlistTitle }); } catch {}
+      }
+    });
+    return unsub;
+  }, [user, notifPerm]);
+
+  // Run autoConfirmStale at most once per browser session, only for signed-in users.
+  useEffect(() => {
+    if (!user) return;
+    if (sessionStorage.getItem('mc-auto-confirm-ran') === '1') return;
+    sessionStorage.setItem('mc-auto-confirm-ran', '1');
+    autoConfirmStale().catch(() => {});
+  }, [user]);
 
   // Ask notification permission after onboarding
   useEffect(() => {
@@ -55,38 +96,16 @@ export default function App() {
     }
   }, [notifPerm]);
 
-  // Browser push notifications via Firestore subscription
-  useEffect(() => {
-    if (!user || notifPerm !== 'granted') return;
-    initialNotifLoadRef.current = true;
-    const unsub = subscribeNotifications(user.uid, list => {
-      if (initialNotifLoadRef.current) {
-        initialNotifLoadRef.current = false;
-        if (list.length > 0) lastNotifIdRef.current = list[0].id;
-        return;
-      }
-      if (list.length === 0) return;
-      const latest = list[0];
-      if (latest.id !== lastNotifIdRef.current) {
-        lastNotifIdRef.current = latest.id;
-        if (document.visibilityState === 'visible') return;
-        const title = latest.type === 'new_contribution'
-          ? '💰 ' + latest.fromName + ' contributed!'
-          : (latest.type === 'confirmed' ? '✅ Payment confirmed' : '⚠️ Payment rejected');
-        new Notification(title, { body: '₹' + latest.amount + ' · ' + latest.wishlistTitle });
-      }
-    });
-    return unsub;
-  }, [user, notifPerm]);
-
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
-  const refreshUnread = useCallback(() => {
-    if (user) getUnreadCount(user.uid).then(setUnreadCount).catch(() => {});
-  }, [user]);
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
+
+  const unreadCount = notifications.reduce((n, x) => n + (x.read ? 0 : 1), 0);
+  const refreshUnread = useCallback(() => {}, []);
 
   function Layout() {
     const loc = useLocation();
@@ -94,14 +113,16 @@ export default function App() {
     return (
       <div className="app-wrapper">
         {!isAdmin && <Navbar toggleTheme={theme === 'dark' ? 'light' : 'dark'} onToggleTheme={toggleTheme} />}
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/wishlist/:id" element={<Detail />} />
-          <Route path="/create" element={<CreateWishlist />} />
-          <Route path="/profile" element={<Profile />} />
-          <Route path="/notifications" element={<NotificationsPage />} />
-          <Route path="/adminReport" element={<AdminReport />} />
-        </Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/wishlist/:id" element={<Detail />} />
+            <Route path="/create" element={<CreateWishlist />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
+            <Route path="/adminReport" element={<AdminReport />} />
+          </Routes>
+        </Suspense>
         {!isAdmin && <Footer />}
         {!isAdmin && <Onboarding />}
         {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
@@ -110,7 +131,7 @@ export default function App() {
   }
 
   return (
-    <UserContext.Provider value={{ user, setUser, unreadCount, refreshUnread }}>
+    <UserContext.Provider value={{ user, setUser, unreadCount, notifications, refreshUnread }}>
       <ToastContext.Provider value={showToast}>
         <BrowserRouter>
           <Layout />

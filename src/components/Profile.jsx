@@ -4,6 +4,7 @@ import { UserContext, ToastContext } from '../App';
 import { subscribeMyWishlists, subscribePendingForUser, signOutUser, confirmContribution, rejectContribution, formatTime } from '../firebase';
 import DonateModal from './DonateModal';
 import ReportModal from './ReportModal';
+import { ConfirmDialog } from './Modal';
 export default function Profile() {
   const { user, setUser, refreshUnread } = useContext(UserContext);
   const showToast = useContext(ToastContext);
@@ -16,6 +17,7 @@ export default function Profile() {
   const [tab, setTab] = useState('active');
   const [showDonate, setShowDonate] = useState(null);
   const [reportData, setReportData] = useState(null);
+  const [pendingReject, setPendingReject] = useState(null);
 
   useEffect(() => {
     if (!user) { setWlLoading(false); setPendingLoading(false); return; }
@@ -35,8 +37,9 @@ export default function Profile() {
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
   };
-  const handleReject = async (contribId, wlId) => {
-    if (!confirm('Reject this payment? The contributor will be notified.')) return;
+  const handleReject = async () => {
+    const { contribId, wlId } = pendingReject;
+    setPendingReject(null);
     try { await rejectContribution(contribId, wlId); showToast('Payment rejected', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
@@ -94,7 +97,7 @@ export default function Profile() {
                   </div>
                   <div className="confirm-actions">
                     <button className="btn btn-success btn-sm" onClick={() => handleConfirm(c.id, c.wishlistId)}>✅ Confirm</button>
-                    <button className="btn btn-outline btn-sm" onClick={() => handleReject(c.id, c.wishlistId)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setPendingReject({ contribId: c.id, wlId: c.wishlistId })} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
                   </div>
                 </div>
               ))}
@@ -152,6 +155,17 @@ export default function Profile() {
 
       {showDonate && <DonateModal wishlistId={showDonate} onClose={() => setShowDonate(null)} />}
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}
+      {pendingReject && (
+        <ConfirmDialog
+          open
+          title="Reject this payment?"
+          message="The contributor will be notified."
+          confirmLabel="Reject"
+          confirmTone="danger"
+          onConfirm={handleReject}
+          onClose={() => setPendingReject(null)}
+        />
+      )}
     </main>
   );
 }

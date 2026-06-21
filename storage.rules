@@ -1,0 +1,18 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Report screenshots — any authenticated user can upload to their own folder,
+    // anyone can read (so admins/wishers can view uploaded proof).
+    match /reports/{uid}/{file=**} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

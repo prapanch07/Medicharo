@@ -1,34 +1,32 @@
 import { useState, useEffect, useContext } from 'react';
 import { Link } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
-import { subscribeNotifications, confirmContribution, rejectContribution, markNotificationRead, markAllNotificationsRead, formatTime, deleteDoc, doc, db } from '../firebase';
+import { confirmContribution, rejectContribution, markNotificationRead, markAllNotificationsRead, formatTime, deleteDoc, doc, db } from '../firebase';
 import ReportModal from './ReportModal';
+import { ConfirmDialog } from './Modal';
 
 export default function NotificationsPage() {
-  const { user, refreshUnread } = useContext(UserContext);
+  const { user, notifications, refreshUnread } = useContext(UserContext);
   const showToast = useContext(ToastContext);
-  const [notifs, setNotifs] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [reportData, setReportData] = useState(null);
+  const [pendingReject, setPendingReject] = useState(null);
 
   useEffect(() => {
     if (!user) return;
     markAllNotificationsRead(user.uid).catch(() => {}).then(() => refreshUnread());
-    setLoading(true);
-    const unsub = subscribeNotifications(user.uid, list => {
-      setNotifs(list);
-      setLoading(false);
-    });
-    return unsub;
-  }, [user]);
+  }, [user, refreshUnread]);
+
+  const notifs = notifications;
+  const loading = !user;
 
   const handleConfirm = async (contribId, wlId, notifId) => {
     try { await confirmContribution(contribId, wlId); await deleteDoc(doc(db, 'notifications', notifId)); showToast('✅ Payment confirmed!', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
   };
-  const handleReject = async (contribId, wlId, notifId) => {
-    if (!confirm('Reject this payment? The contributor will be notified.')) return;
+  const handleReject = async () => {
+    const { contribId, wlId, notifId } = pendingReject;
+    setPendingReject(null);
     try { await rejectContribution(contribId, wlId); await deleteDoc(doc(db, 'notifications', notifId)); showToast('Payment rejected', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
@@ -82,7 +80,7 @@ export default function NotificationsPage() {
                   {n.type === 'new_contribution' && (
                     <div className="confirm-actions" onClick={e => e.stopPropagation()}>
                       <button className="btn btn-success btn-sm" onClick={() => handleConfirm(n.contributionId, n.wishlistId, n.id)}>✅ Confirm</button>
-                      <button className="btn btn-outline btn-sm" onClick={() => handleReject(n.contributionId, n.wishlistId, n.id)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
+                      <button className="btn btn-outline btn-sm" onClick={() => setPendingReject({ contribId: n.contributionId, wlId: n.wishlistId, notifId: n.id })} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
                     </div>
                   )}
                   {n.type === 'rejected' && (
@@ -95,6 +93,17 @@ export default function NotificationsPage() {
         </div>
       </section>
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}
+      {pendingReject && (
+        <ConfirmDialog
+          open
+          title="Reject this payment?"
+          message="The contributor will be notified."
+          confirmLabel="Reject"
+          confirmTone="danger"
+          onConfirm={handleReject}
+          onClose={() => setPendingReject(null)}
+        />
+      )}
     </main>
   );
 }

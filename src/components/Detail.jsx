@@ -5,6 +5,7 @@ import { subscribeWishlist, subscribeContributions, getCreatorDisplay, confirmCo
 import DonateModal from './DonateModal';
 import LoginModal from './LoginModal';
 import ReportModal from './ReportModal';
+import { ConfirmDialog } from './Modal';
 
 export default function Detail() {
   const { id } = useParams();
@@ -13,17 +14,20 @@ export default function Detail() {
 
   const [w, setW] = useState(null);
   const [wlLoading, setWlLoading] = useState(true);
+  const [wlNotFound, setWlNotFound] = useState(false);
   const [contribs, setContribs] = useState([]);
   const [creator, setCreator] = useState(null);
   const [creatorLoading, setCreatorLoading] = useState(true);
   const [showDonate, setShowDonate] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [reportData, setReportData] = useState(null);
+  const [pendingReject, setPendingReject] = useState(null);
 
   useEffect(() => {
     const unsub1 = subscribeWishlist(id, wl => {
-      if (!wl) { showToast('Wishlist not found', 'error'); return; }
+      if (!wl) { setWlNotFound(true); setWlLoading(false); return; }
       setW(wl);
+      setWlNotFound(false);
       setWlLoading(false);
     });
     const unsub2 = subscribeContributions(id, list => {
@@ -34,7 +38,12 @@ export default function Detail() {
 
   useEffect(() => {
     if (w) {
-      getCreatorDisplay(w.creatorUid).then(c => { setCreator(c); setCreatorLoading(false); });
+      let cancelled = false;
+      getCreatorDisplay(w.creatorUid).then(c => {
+        if (cancelled) return;
+        setCreator(c); setCreatorLoading(false);
+      });
+      return () => { cancelled = true; };
     }
   }, [w]);
 
@@ -42,8 +51,9 @@ export default function Detail() {
     try { await confirmContribution(contribId, id); showToast('✅ Payment confirmed!', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
   };
-  const handleReject = async (contribId) => {
-    if (!confirm('Reject this payment? The contributor will be notified.')) return;
+  const handleReject = async () => {
+    const contribId = pendingReject;
+    setPendingReject(null);
     try { await rejectContribution(contribId, id); showToast('Payment rejected', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
   };
@@ -59,7 +69,7 @@ export default function Detail() {
   };
 
   if (wlLoading) return <main id="main-content"><div className="loader-inline" style={{ justifyContent: 'center', paddingTop: '120px' }}><span className="spinner"></span> Loading wishlist...</div></main>;
-  if (!w) return <main id="main-content"><div className="empty-state" style={{ paddingTop: '120px' }}><div className="empty-state-icon">⚠️</div><div className="empty-state-title">Not found</div><Link to="/" className="btn btn-primary" style={{ marginTop: '1rem' }}>Go Home</Link></div></main>;
+  if (wlNotFound || !w) return <main id="main-content"><div className="empty-state" style={{ paddingTop: '120px' }}><div className="empty-state-icon">⚠️</div><div className="empty-state-title">Wishlist not found</div><div className="empty-state-text">It may have been removed or the link is broken.</div><Link to="/" className="btn btn-primary" style={{ marginTop: '1rem' }}>Go Home</Link></div></main>;
 
   const pct = w.price > 0 ? Math.round((w.raised / w.price) * 100) : 0;
   const rem = Math.max(0, (w.price || 0) - (w.raised || 0));
@@ -131,7 +141,7 @@ export default function Detail() {
                     </div>
                     <div className="confirm-actions">
                       <button className="btn btn-success btn-sm" onClick={() => handleConfirm(c.id)}>✅ Confirm</button>
-                      <button className="btn btn-outline btn-sm" onClick={() => handleReject(c.id)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
+                      <button className="btn btn-outline btn-sm" onClick={() => setPendingReject(c.id)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
                     </div>
                   </div>
                 ))}
@@ -217,6 +227,17 @@ export default function Detail() {
       {showLogin && <LoginModal onClose={() => { setShowLogin(false); }} onSuccess={handleLoginSuccess} />}
       {showDonate && <DonateModal wishlistId={id} onClose={() => setShowDonate(false)} />}
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}
+      {pendingReject && (
+        <ConfirmDialog
+          open
+          title="Reject this payment?"
+          message="The contributor will be notified."
+          confirmLabel="Reject"
+          confirmTone="danger"
+          onConfirm={handleReject}
+          onClose={() => setPendingReject(null)}
+        />
+      )}
     </main>
   );
 }
