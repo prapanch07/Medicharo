@@ -5,8 +5,9 @@ import { subscribeMyWishlists, subscribePendingForUser, signOutUser, confirmCont
 import DonateModal from './DonateModal';
 import ReportModal from './ReportModal';
 import { ConfirmDialog } from './Modal';
+import { renderNotifText } from './notificationCopy';
 export default function Profile() {
-  const { user, setUser, refreshUnread } = useContext(UserContext);
+  const { user, setUser, refreshUnread, notifications } = useContext(UserContext);
   const showToast = useContext(ToastContext);
   const navigate = useNavigate();
 
@@ -152,6 +153,37 @@ export default function Profile() {
           )}
         </div>
       </section>
+
+        <div style={{ maxWidth: 'var(--container-max)', margin: 'var(--space-8) auto 0', padding: '0 var(--space-6) var(--space-8)' }}>
+          <div className="section-header" style={{ marginBottom: 'var(--space-4)' }}>
+            <div className="section-header-content">
+              <h2 className="section-title">📋 Activity Log</h2>
+              <p className="section-subtitle">Everything that happened on your account, newest first</p>
+            </div>
+          </div>
+          {notifications.length === 0 ? (
+            <div className="empty-state" style={{ padding: '2rem' }}>
+              <div className="empty-state-icon">📋</div>
+              <div className="empty-state-title" style={{ fontSize: 'var(--text-base)' }}>No activity yet</div>
+              <div className="empty-state-text" style={{ fontSize: 'var(--text-sm)' }}>Contributions, payment confirmations, and reports will appear here.</div>
+            </div>
+          ) : (
+            <div className="notif-card">
+              {notifications.map(n => {
+                const copy = renderNotifText(n);
+                return (
+                  <div key={n.id} className="contribution-item notif-item" style={{ cursor: 'default' }}>
+                    <div className="contribution-info">
+                      <div className="contribution-name">{copy.headline}</div>
+                      <div className="contribution-message">{copy.body}</div>
+                      <div className="contribution-time">{formatTime(n.createdAt)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
       {showDonate && <DonateModal wishlistId={showDonate} onClose={() => setShowDonate(null)} />}
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}

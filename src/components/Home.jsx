@@ -1,7 +1,7 @@
 import { useState, useEffect, useContext, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
-import { subscribeWishlists, formatTime } from '../firebase';
+import { subscribeWishlists, formatTime, getAndLogFcmToken } from '../firebase';
 import DonateModal from './DonateModal';
 import LoginModal from './LoginModal';
 
@@ -67,6 +67,17 @@ export default function Home() {
     setPendingLogin(null);
   };
 
+  const handleFcmToken = async () => {
+    console.log('[FCM] Fetching token…');
+    try {
+      const token = await getAndLogFcmToken();
+      showToast('FCM token logged to console: ' + token.slice(0, 24) + '…', 'success');
+    } catch (e) {
+      console.error('[FCM] Error:', e);
+      showToast(e?.message || 'Could not get FCM token.', 'error');
+    }
+  };
+
   return (
     <main id="main-content">
       <section className="hero">
@@ -82,6 +93,7 @@ export default function Home() {
             <div className="hero-actions">
               <Link to="/create" className="btn btn-primary btn-lg">{user ? '✨ Create a Wishlist' : '✨ Create Your First Wish'}</Link>
               {!user && <button className="btn btn-outline btn-lg" onClick={() => { setPendingLogin('create'); setShowLogin(true); }}>Sign In to Create</button>}
+              <button type="button" className="btn btn-outline btn-sm" onClick={handleFcmToken} style={{ marginLeft: 'var(--space-2)' }}>📱 Get FCM Token</button>
             </div>
           </div>
           {wlLoading ? (

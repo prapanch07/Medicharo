@@ -4,6 +4,7 @@ import { UserContext, ToastContext } from '../App';
 import { confirmContribution, rejectContribution, markNotificationRead, markAllNotificationsRead, formatTime, deleteDoc, doc, db } from '../firebase';
 import ReportModal from './ReportModal';
 import Modal, { ConfirmDialog } from './Modal';
+import { renderNotifText } from './notificationCopy';
 
 export default function NotificationModal({ onClose }) {
   const { user, notifications, refreshUnread } = useContext(UserContext);
@@ -56,15 +57,17 @@ export default function NotificationModal({ onClose }) {
               <div className="empty-state-text" style={{ fontSize: 'var(--text-xs)' }}>Activity will appear here</div>
             </div>
           ) : (
-            notifs.map(n => (
+            notifs.map(n => {
+              const copy = renderNotifText(n);
+              return (
               <div key={n.id} className="notif-modal-item" onClick={() => { if (!n.read) { markNotificationRead(n.id); refreshUnread(); } }}>
                 <div className="contribution-info" style={{ flex: 1, minWidth: 0 }}>
                   <div className="contribution-name" style={{ fontSize: 'var(--text-sm)' }}>
                     {!n.read && <span className="notif-dot" />}
-                    {n.type === 'new_contribution' ? '💰 ' + n.fromName + ' contributed' : (n.type === 'confirmed' ? '✅ Payment confirmed' : '⚠️ Payment rejected')}
+                    {copy.headline}
                   </div>
                   <div className="contribution-message" style={{ fontSize: 'var(--text-xs)' }}>
-                    {n.type === 'new_contribution' ? '₹' + n.amount + ' · ' + (n.message ? '"' + n.message + '"' : 'No message') : (n.type === 'confirmed' ? '₹' + n.amount + ' for ' + n.wishlistTitle + ' was confirmed' : '₹' + n.amount + ' for ' + n.wishlistTitle + ' was rejected')}
+                    {copy.body}
                   </div>
                   <div className="contribution-time" style={{ fontSize: '10px' }}>{formatTime(n.createdAt)}</div>
                 </div>
@@ -78,7 +81,8 @@ export default function NotificationModal({ onClose }) {
                   <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); setReportData({ contributionId: n.contributionId, wishlistId: n.wishlistId }); }} style={{ flexShrink: 0, padding: '0.25rem 0.5rem', fontSize: '10px', color: 'var(--color-error)' }} aria-label="Report issue">🚩</button>
                 )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
         {total > 5 && (

@@ -4,6 +4,7 @@ import { UserContext, ToastContext } from '../App';
 import { confirmContribution, rejectContribution, markNotificationRead, markAllNotificationsRead, formatTime, deleteDoc, doc, db } from '../firebase';
 import ReportModal from './ReportModal';
 import { ConfirmDialog } from './Modal';
+import { renderNotifText } from './notificationCopy';
 
 export default function NotificationsPage() {
   const { user, notifications, refreshUnread } = useContext(UserContext);
@@ -65,15 +66,17 @@ export default function NotificationsPage() {
             </div>
           ) : (
             <div className="notif-card">
-              {notifs.map(n => (
+              {notifs.map(n => {
+                const copy = renderNotifText(n);
+                return (
                 <div key={n.id} className="contribution-item notif-item" onClick={() => { if (!n.read) { markNotificationRead(n.id); refreshUnread(); } }}>
                   <div className="contribution-info">
                     <div className="contribution-name">
                       {!n.read && <span className="notif-dot" />}
-                      {n.type === 'new_contribution' ? '💰 ' + n.fromName + ' contributed' : (n.type === 'confirmed' ? '✅ Payment confirmed' : '⚠️ Payment rejected')}
+                      {copy.headline}
                     </div>
                     <div className="contribution-message">
-                      {n.type === 'new_contribution' ? '₹' + n.amount + ' · ' + (n.message ? '"' + n.message + '"' : 'No message') : (n.type === 'confirmed' ? '₹' + n.amount + ' for ' + n.wishlistTitle + ' was confirmed' : '₹' + n.amount + ' for ' + n.wishlistTitle + ' was rejected')}
+                      {copy.body}
                     </div>
                     <div className="contribution-time">{formatTime(n.createdAt)}</div>
                   </div>
@@ -87,7 +90,8 @@ export default function NotificationsPage() {
                     <button className="btn btn-sm btn-outline" onClick={e => { e.stopPropagation(); setReportData({ contributionId: n.contributionId, wishlistId: n.wishlistId }); }} style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--color-error)' }}>🚩 Report Issue</button>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

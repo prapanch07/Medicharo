@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, createContext, useRef, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { onAuthChanged, autoConfirmStale, subscribeNotifications } from './firebase';
+import { onAuthChanged, autoConfirmStale, subscribeNotifications, subscribeReportsForUser, getAndLogFcmToken, subscribeFcmForegroundMessages } from './firebase';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Home from './components/Home';
@@ -29,6 +29,7 @@ function RouteFallback() {
 export default function App() {
   const [user, setUser] = useState(null);
   const [notifications, setNotifications] = useState([]);
+  const [userReports, setUserReports] = useState([]);
   const [toast, setToast] = useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('mc-theme') || 'light');
   const [notifPerm, setNotifPerm] = useState(localStorage.getItem('mc-notif-perm'));
@@ -77,6 +78,13 @@ export default function App() {
     return unsub;
   }, [user, notifPerm]);
 
+  // Reports filed by the current user — used by Detail.jsx (status badges)
+  // and Profile.jsx (activity log).
+  useEffect(() => {
+    if (!user) { setUserReports([]); return; }
+    return subscribeReportsForUser(user.uid, setUserReports);
+  }, [user]);
+
   // Run autoConfirmStale at most once per browser session, only for signed-in users.
   useEffect(() => {
     if (!user) return;
@@ -84,6 +92,16 @@ export default function App() {
     sessionStorage.setItem('mc-auto-confirm-ran', '1');
     autoConfirmStale().catch(() => {});
   }, [user]);
+
+  // Fetch + log FCM token once the user is signed in and has granted notification
+  // permission. Saves the token to users/{uid}.fcmToken so a server can target this device.
+  useEffect(() => {
+    if (!user || notifPerm !== 'granted') return;
+    getAndLogFcmToken().catch(err => console.warn('[FCM] auto-init skipped:', err.message));
+    let unsub;
+    subscribeFcmForegroundMessages().then(fn => { unsub = fn; });
+    return () => { if (unsub) unsub(); };
+  }, [user, notifPerm]);
 
   // Ask notification permission after onboarding
   useEffect(() => {
@@ -131,7 +149,7 @@ export default function App() {
   }
 
   return (
-    <UserContext.Provider value={{ user, setUser, unreadCount, notifications, refreshUnread }}>
+    <UserContext.Provider value={{ user, setUser, unreadCount, notifications, userReports, refreshUnread }}>
       <ToastContext.Provider value={showToast}>
         <BrowserRouter>
           <Layout />

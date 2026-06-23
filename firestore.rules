@@ -2,14 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Wishlists — public read, auth required for create/update/delete
+    // Wishlists — public read; owner can do anything; non-owners may only touch the
+    // running counters (committed/raised/status) so contributions and admin
+    // dispute resolution can work without a Cloud Function.
     match /wishlists/{wishlistId} {
       allow read: if true;
       allow create: if request.auth != null
         && request.resource.data.keys().hasAll(['title', 'price', 'reason', 'upiId', 'creatorName', 'creatorUid', 'status', 'createdAt'])
         && request.resource.data.creatorUid == request.auth.uid;
-      allow update: if request.auth != null
-        && resource.data.creatorUid == request.auth.uid;
+      allow update: if request.auth != null && (
+        resource.data.creatorUid == request.auth.uid
+        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['committed', 'raised', 'status'])
+      );
       allow delete: if request.auth != null
         && resource.data.creatorUid == request.auth.uid;
     }
@@ -22,16 +26,18 @@ service cloud.firestore {
       allow update: if request.auth != null;
     }
 
-    // Notifications — only the target user can read
+    // Notifications — only the target user can read/update/delete
     match /notifications/{notificationId} {
       allow read: if request.auth != null
         && resource.data.toUid == request.auth.uid;
       allow create: if request.auth != null;
       allow update: if request.auth != null
         && resource.data.toUid == request.auth.uid;
+      allow delete: if request.auth != null
+        && resource.data.toUid == request.auth.uid;
     }
 
-    // Users — public read, any auth user can write (admin needs to update reports counter)
+    // Users — public read, any auth user can write (admin needs to update strike counters)
     match /users/{userId} {
       allow read: if true;
       allow create: if request.auth != null;

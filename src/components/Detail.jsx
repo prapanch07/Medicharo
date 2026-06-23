@@ -1,4 +1,4 @@
-import { useState, useEffect, useContext } from 'react';
+import { useState, useEffect, useContext, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
 import { subscribeWishlist, subscribeContributions, getCreatorDisplay, confirmContribution, rejectContribution, formatTime } from '../firebase';
@@ -9,8 +9,14 @@ import { ConfirmDialog } from './Modal';
 
 export default function Detail() {
   const { id } = useParams();
-  const { user } = useContext(UserContext);
+  const { user, userReports } = useContext(UserContext);
   const showToast = useContext(ToastContext);
+
+  const reportByContribId = useMemo(() => {
+    const m = new Map();
+    (userReports || []).forEach(r => { if (r.contributionId) m.set(r.contributionId, r); });
+    return m;
+  }, [userReports]);
 
   const [w, setW] = useState(null);
   const [wlLoading, setWlLoading] = useState(true);
@@ -192,15 +198,38 @@ export default function Detail() {
                   </div>
                 ))
               )}
-              {user && contribs.filter(c => c.status === 'rejected' && c.contributorUid === user.uid).map(c => (
-                <div key={c.id} className="contribution-item rejected-contribution">
-                  <div className="contribution-info">
-                    <div className="contribution-name" style={{ color: 'var(--color-error)' }}>⚠️ Your contribution was rejected</div>
-                    <div className="contribution-time">{formatTime(c.createdAt)}</div>
+              {user && contribs.filter(c => c.status === 'rejected' && c.contributorUid === user.uid).map(c => {
+                const report = reportByContribId.get(c.id);
+                const isOpen = report && report.status === 'open';
+                const isAccepted = report && (report.status === 'accepted' || report.status === 'closed');
+                const isRejected = report && report.status === 'rejected';
+                return (
+                  <div key={c.id} className="contribution-item rejected-contribution">
+                    <div className="contribution-info">
+                      <div className="contribution-name" style={{ color: 'var(--color-error)' }}>⚠️ Your contribution was rejected</div>
+                      <div className="contribution-time">{formatTime(c.createdAt)}</div>
+                    </div>
+                    {!report && (
+                      <button className="btn btn-sm btn-outline" onClick={() => setReportData({ contributionId: c.id, wishlistId: id })} style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--color-error)' }}>🚩 Report Issue</button>
+                    )}
+                    {isOpen && (
+                      <div style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '0.4rem 0.6rem', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-secondary)', color: 'var(--color-text-muted)' }}>
+                        ⏳ Report submitted — awaiting admin review
+                      </div>
+                    )}
+                    {isAccepted && (
+                      <div style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '0.4rem 0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(52, 168, 83, 0.1)', color: 'var(--color-success)' }}>
+                        ✅ Admin approved your report
+                      </div>
+                    )}
+                    {isRejected && (
+                      <div style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '0.4rem 0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(234, 67, 53, 0.1)', color: 'var(--color-error)' }}>
+                        ❌ Admin rejected your report
+                      </div>
+                    )}
                   </div>
-                  <button className="btn btn-sm btn-outline" onClick={() => setReportData({ contributionId: c.id, wishlistId: id })} style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--color-error)' }}>🚩 Report Issue</button>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {rem > 0 && (
