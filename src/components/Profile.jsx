@@ -2,11 +2,12 @@ import { useState, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
 import { subscribeMyWishlists, subscribePendingForUser, signOutUser, confirmContribution, rejectContribution, formatTime } from '../firebase';
-import EditProfileModal from './EditProfileModal';
 import DonateModal from './DonateModal';
 import ReportModal from './ReportModal';
+import { ConfirmDialog } from './Modal';
+import { renderNotifText } from './notificationCopy';
 export default function Profile() {
-  const { user, setUser, refreshUnread } = useContext(UserContext);
+  const { user, setUser, refreshUnread, notifications } = useContext(UserContext);
   const showToast = useContext(ToastContext);
   const navigate = useNavigate();
 
@@ -15,9 +16,9 @@ export default function Profile() {
   const [pending, setPending] = useState([]);
   const [pendingLoading, setPendingLoading] = useState(true);
   const [tab, setTab] = useState('active');
-  const [showEdit, setShowEdit] = useState(false);
   const [showDonate, setShowDonate] = useState(null);
   const [reportData, setReportData] = useState(null);
+  const [pendingReject, setPendingReject] = useState(null);
 
   useEffect(() => {
     if (!user) { setWlLoading(false); setPendingLoading(false); return; }
@@ -37,8 +38,9 @@ export default function Profile() {
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
   };
-  const handleReject = async (contribId, wlId) => {
-    if (!confirm('Reject this payment? The contributor will be notified.')) return;
+  const handleReject = async () => {
+    const { contribId, wlId } = pendingReject;
+    setPendingReject(null);
     try { await rejectContribution(contribId, wlId); showToast('Payment rejected', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
     refreshUnread();
@@ -67,7 +69,6 @@ export default function Profile() {
               <div className="profile-stat"><div className="profile-stat-value">{completed.length}</div><div className="profile-stat-label">Completed</div></div>
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
-              <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>✏️ Edit Profile</button>
               <button className="btn btn-outline btn-sm" style={{ color: 'var(--color-error)' }} onClick={handleSignOut}>🚪 Sign Out</button>
             </div>
         {pendingLoading ? (
@@ -97,7 +98,7 @@ export default function Profile() {
                   </div>
                   <div className="confirm-actions">
                     <button className="btn btn-success btn-sm" onClick={() => handleConfirm(c.id, c.wishlistId)}>✅ Confirm</button>
-                    <button className="btn btn-outline btn-sm" onClick={() => handleReject(c.id, c.wishlistId)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setPendingReject({ contribId: c.id, wlId: c.wishlistId })} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
                   </div>
                 </div>
               ))}
@@ -153,9 +154,50 @@ export default function Profile() {
         </div>
       </section>
 
-      {showEdit && <EditProfileModal onClose={() => setShowEdit(false)} onSave={fetchData} />}
+        <div style={{ maxWidth: 'var(--container-max)', margin: 'var(--space-8) auto 0', padding: '0 var(--space-6) var(--space-8)' }}>
+          <div className="section-header" style={{ marginBottom: 'var(--space-4)' }}>
+            <div className="section-header-content">
+              <h2 className="section-title">📋 Activity Log</h2>
+              <p className="section-subtitle">Everything that happened on your account, newest first</p>
+            </div>
+          </div>
+          {notifications.length === 0 ? (
+            <div className="empty-state" style={{ padding: '2rem' }}>
+              <div className="empty-state-icon">📋</div>
+              <div className="empty-state-title" style={{ fontSize: 'var(--text-base)' }}>No activity yet</div>
+              <div className="empty-state-text" style={{ fontSize: 'var(--text-sm)' }}>Contributions, payment confirmations, and reports will appear here.</div>
+            </div>
+          ) : (
+            <div className="notif-card">
+              {notifications.map(n => {
+                const copy = renderNotifText(n);
+                return (
+                  <div key={n.id} className="contribution-item notif-item" style={{ cursor: 'default' }}>
+                    <div className="contribution-info">
+                      <div className="contribution-name">{copy.headline}</div>
+                      <div className="contribution-message">{copy.body}</div>
+                      <div className="contribution-time">{formatTime(n.createdAt)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
       {showDonate && <DonateModal wishlistId={showDonate} onClose={() => setShowDonate(null)} />}
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}
+      {pendingReject && (
+        <ConfirmDialog
+          open
+          title="Reject this payment?"
+          message="The contributor will be notified."
+          confirmLabel="Reject"
+          confirmTone="danger"
+          onConfirm={handleReject}
+          onClose={() => setPendingReject(null)}
+        />
+      )}
     </main>
   );
 }

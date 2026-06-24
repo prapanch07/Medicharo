@@ -6,21 +6,26 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc,
-  query, where, orderBy, serverTimestamp, writeBatch, onSnapshot
+  query, where, orderBy, serverTimestamp, writeBatch, onSnapshot, increment, runTransaction
 } from 'firebase/firestore';
 
+const env = import.meta.env;
 const firebaseConfig = {
-  apiKey: "AIzaSyCRillt8M7PSsrEgONTUN7eG7fjGO7gZSw",
-  authDomain: "medicharoo.firebaseapp.com",
-  projectId: "medicharoo",
-  storageBucket: "medicharoo.appspot.com",
-  messagingSenderId: "787790285383",
-  appId: "1:787790285383:web:41ffcb139eaff2e64a26cd"
+  apiKey: env.VITE_FIREBASE_API_KEY || "AIzaSyCRillt8M7PSsrEgONTUN7eG7fjGO7gZSw",
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || "medicharoo.firebaseapp.com",
+  projectId: env.VITE_FIREBASE_PROJECT_ID || "medicharoo",
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || "medicharoo.firebasestorage.app",
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || "623917553571",
+  appId: env.VITE_FIREBASE_APP_ID || "1:623917553571:web:14e26d05650fb176c1ec16",
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || "G-BFTNC087T3"
 };
+
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+const BAN_THRESHOLD = 3;
 
 function docToObj(d) { return d.exists() ? { id: d.id, ...d.data() } : null; }
 function snapToArray(snap) { const a = []; snap.forEach(d => a.push({ id: d.id, ...d.data() })); return a; }
@@ -36,6 +41,40 @@ function formatTime(st) {
   if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
   if (diff < 2592000000) return Math.floor(diff / 86400000) + 'd ago';
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function isValidHttpUrl(s) {
+  if (!s) return true;
+  return /^https?:\/\//i.test(s);
+}
+
+async function assertNotBanned(uid) {
+  if (!uid) return;
+  try {
+    const u = await getDoc(doc(db, 'users', uid));
+    if (u.exists() && u.data().banned === true) {
+      throw new Error('Your account has been restricted due to repeated reports.');
+    }
+  } catch (e) {
+    if (e.message && e.message.includes('restricted')) throw e;
+    // best-effort: if read fails (e.g. offline), don't block legit users
+  }
+}
+
+// Atomically increment a strike counter on a user; flip `banned` if total crosses the threshold.
+async function bumpUserStrike(uid, field) {
+  if (!uid) return;
+  const userRef = doc(db, 'users', uid);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(userRef);
+    const data = snap.exists() ? snap.data() : {};
+    const next = { ...data, [field]: (data[field] || 0) + 1 };
+    const total = (next.reportsAccepted || 0) + (next.falseReports || 0);
+    const update = { [field]: increment(1) };
+    if (total >= BAN_THRESHOLD && !data.banned) update.banned = true;
+    if (snap.exists()) tx.update(userRef, update);
+    else tx.set(userRef, { ...update, [field]: 1 }, { merge: true });
+  });
 }
 
 // --- Auth ---
@@ -54,16 +93,6 @@ export function getCurrentUser() {
 }
 
 // --- Wishlists ---
-export async function getWishlists() {
-  const snap = await getDocs(collection(db, 'wishlists'));
-  const list = snapToArray(snap);
-  list.sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
-    return tb - ta;
-  });
-  return list;
-}
 export async function getWishlist(id) {
   const d = await getDoc(doc(db, 'wishlists', id));
   return docToObj(d);
@@ -71,10 +100,17 @@ export async function getWishlist(id) {
 export async function createWishlist(data) {
   const user = getCurrentUser();
   if (!user) throw new Error('You must be logged in to create a wishlist.');
+  await assertNotBanned(user.uid);
+  if (data.image && !isValidHttpUrl(data.image) && !data.image.startsWith('data:image/')) {
+    throw new Error('Image must be a valid http(s) URL or uploaded file.');
+  }
+  if (data.productLink && !isValidHttpUrl(data.productLink)) {
+    throw new Error('Product link must be a valid http(s) URL.');
+  }
   const ref = doc(collection(db, 'wishlists'));
   const wishlist = {
     creatorUid: user.uid, creatorName: user.name,
-    title: data.title.trim(), price: Math.abs(parseInt(data.price)) || 0, raised: 0,
+    title: data.title.trim(), price: Math.abs(parseInt(data.price)) || 0, raised: 0, committed: 0,
     image: data.image || '', reason: data.reason.trim(), category: data.category || 'Other',
     upiId: data.upiId.trim(), productLink: data.productLink || '',
     status: 'active', createdAt: getServerTime()
@@ -85,138 +121,332 @@ export async function createWishlist(data) {
   }, { merge: true });
   return { id: ref.id, ...wishlist, createdAt: new Date().toISOString() };
 }
-export async function updateWishlist(id, updates) { await updateDoc(doc(db, 'wishlists', id), updates); }
-export async function deleteWishlist(id) { await deleteDoc(doc(db, 'wishlists', id)); }
-export async function getMyWishlists(uid) {
-  if (!uid) return [];
-  const snap = await getDocs(query(collection(db, 'wishlists'), where('creatorUid', '==', uid)));
-  const list = snapToArray(snap);
-  list.sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
-    return tb - ta;
-  });
-  return list;
+export async function updateWishlist(id, updates) {
+  if (updates.image !== undefined && updates.image && !isValidHttpUrl(updates.image) && !updates.image.startsWith('data:image/')) {
+    throw new Error('Image must be a valid http(s) URL.');
+  }
+  await updateDoc(doc(db, 'wishlists', id), updates);
 }
+export async function deleteWishlist(id) { await deleteDoc(doc(db, 'wishlists', id)); }
 
 // --- Contributions ---
 export async function addContribution(wishlistId, { amount, name, message }) {
-  const w = await getWishlist(wishlistId);
-  if (!w) throw new Error('Wishlist not found');
-  if (w.status === 'completed' || (w.raised || 0) >= (w.price || 0)) throw new Error('Already fulfilled');
-  if (!amount || amount <= 0) throw new Error('Invalid amount');
-  if ((w.raised || 0) + amount > (w.price || 0)) throw new Error('Amount exceeds remaining');
-
   const user = getCurrentUser();
-  const ref = doc(collection(db, 'contributions'));
-  const contrib = {
-    wishlistId, wishlistCreatorUid: w.creatorUid,
-    contributorUid: user?.uid || null,
-    amount: Math.abs(parseInt(amount)),
-    contributorName: (name || '').trim() || 'Anonymous',
-    message: (message || '').trim(), status: 'pending', createdAt: getServerTime()
-  };
-  await setDoc(ref, contrib);
+  await assertNotBanned(user?.uid);
+  const amt = Math.abs(parseInt(amount)) || 0;
+  if (!amt || amt <= 0) throw new Error('Invalid amount');
+
+  const wishlistRef = doc(db, 'wishlists', wishlistId);
+  const contribRef = doc(collection(db, 'contributions'));
+
+  // Single transaction: read wishlist, check capacity (raised + committed + amt <= price), create pending doc,
+  // and increment committed. Prevents two contributors from both reserving the same remaining slot.
+  let snapshot;
+  await runTransaction(db, async (tx) => {
+    const wSnap = await tx.get(wishlistRef);
+    if (!wSnap.exists()) throw new Error('Wishlist not found');
+    const w = wSnap.data();
+    if (w.status === 'completed') throw new Error('Already fulfilled');
+    const raised = w.raised || 0;
+    const committed = w.committed || 0;
+    const price = w.price || 0;
+    if (raised >= price) throw new Error('Already fulfilled');
+    if (raised + committed + amt > price) throw new Error('Amount exceeds remaining');
+
+    const contrib = {
+      wishlistId, wishlistCreatorUid: w.creatorUid,
+      contributorUid: user?.uid || null,
+      amount: amt,
+      contributorName: (name || '').trim() || 'Anonymous',
+      message: (message || '').trim(), status: 'pending', createdAt: getServerTime()
+    };
+    tx.set(contribRef, contrib);
+    tx.update(wishlistRef, { committed: increment(amt) });
+    snapshot = { contrib, w };
+  });
 
   await setDoc(doc(collection(db, 'notifications')), {
-    toUid: w.creatorUid, type: 'new_contribution',
-    fromName: contrib.contributorName, fromUid: contrib.contributorUid,
-    wishlistId, wishlistTitle: w.title, amount: contrib.amount,
-    message: contrib.message, contributionId: ref.id,
+    toUid: snapshot.w.creatorUid, type: 'new_contribution',
+    fromName: snapshot.contrib.contributorName, fromUid: snapshot.contrib.contributorUid,
+    wishlistId, wishlistTitle: snapshot.w.title, amount: snapshot.contrib.amount,
+    message: snapshot.contrib.message, contributionId: contribRef.id,
     read: false, createdAt: getServerTime()
   });
-  return { id: ref.id, ...contrib };
+  return { id: contribRef.id, ...snapshot.contrib };
 }
+
+export function subscribeReports(callback) {
+  const q = query(collection(db, 'reports'));
+  return onSnapshot(q, snap => {
+    const list = snapToArray(snap);
+    list.sort((a, b) => {
+      const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
+      const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
+      return tb - ta;
+    });
+    callback(list);
+  }, err => { onError(err); callback([]); });
+}
+
 export async function confirmContribution(contribId, wishlistId) {
-  const cSnap = await getDoc(doc(db, 'contributions', contribId));
-  const c = docToObj(cSnap);
-  if (!c || c.status !== 'pending') throw new Error('Cannot process');
-  await updateDoc(doc(db, 'contributions', contribId), { status: 'confirmed' });
-  const w = await getWishlist(wishlistId);
-  const newRaised = (w.raised || 0) + c.amount;
-  const updates = { raised: newRaised };
-  if (newRaised >= (w.price || 0)) updates.status = 'completed';
-  await updateDoc(doc(db, 'wishlists', wishlistId), updates);
-  if (c.contributorUid) {
-    await setDoc(doc(collection(db, 'notifications')), {
-      toUid: c.contributorUid, type: 'confirmed',
-      fromName: w.creatorName, wishlistId, wishlistTitle: w.title,
-      amount: c.amount, read: false, createdAt: getServerTime()
-    });
-  }
-}
-export async function rejectContribution(contribId, wishlistId) {
-  const cSnap = await getDoc(doc(db, 'contributions', contribId));
-  const c = docToObj(cSnap);
-  if (!c || c.status !== 'pending') throw new Error('Cannot process');
-  await updateDoc(doc(db, 'contributions', contribId), { status: 'rejected' });
-  const w = await getWishlist(wishlistId);
-  if (c.contributorUid) {
-    await setDoc(doc(collection(db, 'notifications')), {
-      toUid: c.contributorUid, type: 'rejected',
-      fromName: w.creatorName, wishlistId, wishlistTitle: w.title,
-      contributionId: contribId, amount: c.amount, read: false, createdAt: getServerTime()
-    });
-  }
-}
-export async function getContributions(wishlistId) {
-  const snap = await getDocs(query(collection(db, 'contributions'), where('wishlistId', '==', wishlistId)));
-  const list = snapToArray(snap);
-  list.sort((a, b) => {
-    const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
-    const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
-    return tb - ta;
+  const contribRef = doc(db, 'contributions', contribId);
+  const wishlistRef = doc(db, 'wishlists', wishlistId);
+  let result;
+  await runTransaction(db, async (tx) => {
+    const cSnap = await tx.get(contribRef);
+    const wSnap = await tx.get(wishlistRef);
+    if (!cSnap.exists() || !wSnap.exists()) throw new Error('Cannot process');
+    const c = cSnap.data();
+    const w = wSnap.data();
+    if (c.status !== 'pending') throw new Error('Cannot process');
+    const amt = c.amount || 0;
+    const newRaised = (w.raised || 0) + amt;
+    const wlUpdate = {
+      raised: increment(amt),
+      committed: increment(-amt)
+    };
+    if (newRaised >= (w.price || 0)) wlUpdate.status = 'completed';
+    tx.update(contribRef, { status: 'confirmed' });
+    tx.update(wishlistRef, wlUpdate);
+    result = { c, w };
   });
-  return list;
+  if (result?.c?.contributorUid) {
+    await setDoc(doc(collection(db, 'notifications')), {
+      toUid: result.c.contributorUid, type: 'confirmed',
+      fromName: result.w.creatorName, wishlistId, wishlistTitle: result.w.title,
+      contributionId: contribId, amount: result.c.amount, read: false, createdAt: getServerTime()
+    });
+  }
 }
-export async function getPendingForUser(uid) {
-  if (!uid) return [];
-  const wl = await getMyWishlists(uid);
-  const ids = wl.map(w => w.id);
-  if (ids.length === 0) return [];
-  if (ids.length <= 10) {
-    const snap = await getDocs(query(collection(db, 'contributions'), where('wishlistId', 'in', ids), where('status', '==', 'pending')));
-    return snapToArray(snap);
+
+export async function rejectContribution(contribId, wishlistId) {
+  const contribRef = doc(db, 'contributions', contribId);
+  const wishlistRef = doc(db, 'wishlists', wishlistId);
+  let result;
+  await runTransaction(db, async (tx) => {
+    const cSnap = await tx.get(contribRef);
+    const wSnap = await tx.get(wishlistRef);
+    if (!cSnap.exists()) throw new Error('Cannot process');
+    const c = cSnap.data();
+    if (c.status !== 'pending') throw new Error('Cannot process');
+    tx.update(contribRef, { status: 'rejected' });
+    if (wSnap.exists()) tx.update(wishlistRef, { committed: increment(-(c.amount || 0)) });
+    result = { c, w: wSnap.exists() ? wSnap.data() : null };
+  });
+  if (result?.c?.contributorUid) {
+    await setDoc(doc(collection(db, 'notifications')), {
+      toUid: result.c.contributorUid, type: 'rejected',
+      fromName: result.w?.creatorName || '', wishlistId,
+      wishlistTitle: result.w?.title || '',
+      contributionId: contribId, amount: result.c.amount, read: false, createdAt: getServerTime()
+    });
   }
-  const all = [];
-  for (let i = 0; i < ids.length; i += 10) {
-    const snap = await getDocs(query(collection(db, 'contributions'), where('wishlistId', 'in', ids.slice(i, i + 10)), where('status', '==', 'pending')));
-    all.push(...snapToArray(snap));
+}
+
+// --- Admin: dispute resolution ---
+// Admin agrees with the contributor: a rejected contribution gets credited to the wishlist after all.
+// Idempotent — re-clicking is safe.
+export async function adminAcceptReport(report) {
+  const reportRef = doc(db, 'reports', report.id);
+  const contribRef = doc(db, 'contributions', report.contributionId);
+  const wishlistRef = doc(db, 'wishlists', report.wishlistId);
+  let result;
+  await runTransaction(db, async (tx) => {
+    const [rSnap, cSnap, wSnap] = [
+      await tx.get(reportRef),
+      await tx.get(contribRef),
+      await tx.get(wishlistRef)
+    ];
+    if (!rSnap.exists()) throw new Error('Report not found');
+    const r = rSnap.data();
+    if (r.status !== 'open') { result = { skipped: true }; return; }
+    if (!cSnap.exists()) throw new Error('Contribution not found');
+    const c = cSnap.data();
+    const w = wSnap.exists() ? wSnap.data() : null;
+    const amt = c.amount || 0;
+
+    // Only credit if the contribution hasn't already been confirmed somehow.
+    if (c.status !== 'confirmed') {
+      tx.update(contribRef, { status: 'confirmed' });
+      if (wSnap.exists()) {
+        const newRaised = (w.raised || 0) + amt;
+        const wlUpdate = { raised: increment(amt) };
+        if (newRaised >= (w.price || 0)) wlUpdate.status = 'completed';
+        tx.update(wishlistRef, wlUpdate);
+      }
+    }
+    tx.update(reportRef, { status: 'accepted', resolvedAt: serverTimestamp() });
+    result = { c, w, r };
+  });
+
+  if (result?.skipped) return;
+  const c = result.c;
+  const w = result.w;
+  const wisherUid = w?.creatorUid || report.wisherUid;
+  const wishlistTitle = w?.title || '';
+
+  if (c.contributorUid) {
+    await setDoc(doc(collection(db, 'notifications')), {
+      toUid: c.contributorUid, type: 'report_accepted',
+      fromName: 'Admin', wishlistId: report.wishlistId, wishlistTitle,
+      contributionId: report.contributionId, amount: c.amount,
+      read: false, createdAt: getServerTime()
+    });
   }
-  return all;
+  if (wisherUid) {
+    await setDoc(doc(collection(db, 'notifications')), {
+      toUid: wisherUid, type: 'report_accepted_against',
+      fromName: 'Admin', wishlistId: report.wishlistId, wishlistTitle,
+      contributionId: report.contributionId, amount: c.amount,
+      read: false, createdAt: getServerTime()
+    });
+    await bumpUserStrike(wisherUid, 'reportsAccepted');
+  }
+}
+
+export async function adminDismissReport(report) {
+  const reportRef = doc(db, 'reports', report.id);
+  const contribRef = doc(db, 'contributions', report.contributionId);
+  const wishlistRef = doc(db, 'wishlists', report.wishlistId);
+  let result;
+  await runTransaction(db, async (tx) => {
+    const [rSnap, cSnap, wSnap] = [
+      await tx.get(reportRef),
+      await tx.get(contribRef),
+      await tx.get(wishlistRef)
+    ];
+    if (!rSnap.exists()) throw new Error('Report not found');
+    const r = rSnap.data();
+    if (r.status !== 'open') { result = { skipped: true }; return; }
+    tx.update(reportRef, { status: 'rejected', resolvedAt: serverTimestamp() });
+    result = {
+      c: cSnap.exists() ? cSnap.data() : null,
+      w: wSnap.exists() ? wSnap.data() : null,
+      r
+    };
+  });
+
+  if (result?.skipped) return;
+  const c = result.c;
+  const w = result.w;
+  const wisherUid = w?.creatorUid || report.wisherUid;
+  const contributorUid = c?.contributorUid || report.reportedBy;
+  const wishlistTitle = w?.title || '';
+  const amount = c?.amount || 0;
+
+  if (contributorUid) {
+    await setDoc(doc(collection(db, 'notifications')), {
+      toUid: contributorUid, type: 'report_dismissed',
+      fromName: 'Admin', wishlistId: report.wishlistId, wishlistTitle,
+      contributionId: report.contributionId, amount,
+      read: false, createdAt: getServerTime()
+    });
+    await bumpUserStrike(contributorUid, 'falseReports');
+  }
+  if (wisherUid) {
+    await setDoc(doc(collection(db, 'notifications')), {
+      toUid: wisherUid, type: 'report_dismissed_for',
+      fromName: 'Admin', wishlistId: report.wishlistId, wishlistTitle,
+      contributionId: report.contributionId, amount,
+      read: false, createdAt: getServerTime()
+    });
+  }
 }
 
 // --- Notifications ---
-export async function getNotifications(uid) {
-  if (!uid) return [];
-  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid), orderBy('createdAt', 'desc')));
-  return snapToArray(snap);
-}
 export async function markNotificationRead(id) {
   await updateDoc(doc(db, 'notifications', id), { read: true });
 }
 export async function markAllNotificationsRead(uid) {
-  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false)));
+  if (!uid) return;
+  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid)));
   const batch = writeBatch(db);
-  snap.forEach(d => batch.update(d.ref, { read: true }));
+  snap.forEach(d => {
+    const data = d.data();
+    if (!data.read) batch.update(d.ref, { read: true });
+  });
   await batch.commit();
-}
-export async function getUnreadCount(uid) {
-  if (!uid) return 0;
-  const snap = await getDocs(query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false)));
-  return snap.size;
 }
 
 // --- Reports ---
+// Reads a File as a base64 data URL — used to embed screenshots directly in Firestore.
+// Firestore document limit is 1 MiB, so callers must cap raw file size to ~700 KB.
+export function fileToDataUrl(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to read file. Try a different image.'));
+    reader.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        try { onProgress?.(pct); } catch {}
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function submitReport({ contributionId, wishlistId, reason, screenshot }) {
+  const current = getCurrentUser();
+  await assertNotBanned(current?.uid);
+
+  // Dedupe: refuse if an open report already exists for this contribution.
+  const existing = await getDocs(
+    query(
+      collection(db, 'reports'),
+      where('contributionId', '==', contributionId),
+      where('status', '==', 'open')
+    )
+  );
+  if (!existing.empty) throw new Error('A report is already open for this payment.');
+
   const ref = doc(collection(db, 'reports'));
+  const [cSnap, wSnap] = await Promise.all([
+    getDoc(doc(db, 'contributions', contributionId)),
+    getDoc(doc(db, 'wishlists', wishlistId))
+  ]);
+  const c = docToObj(cSnap);
+  const w = docToObj(wSnap);
   await setDoc(ref, {
     contributionId, wishlistId,
     reason: reason.trim(), screenshot: screenshot || '',
-    status: 'open', reportedBy: getCurrentUser()?.uid || null,
+    status: 'open', reportedBy: current?.uid || null,
+    contributorName: c?.contributorName || 'Unknown',
+    contributorUid: c?.contributorUid || null,
+    wisherName: w?.creatorName || 'Unknown',
+    wisherUpiId: w?.upiId || '',
+    wisherUid: w?.creatorUid || '',
     createdAt: getServerTime()
   });
+
+  // Activity log entry for the reporter. read: true so it doesn't bump the unread badge —
+  // the user just performed this action, no need to alert them.
+  if (current?.uid) {
+    try {
+      await setDoc(doc(collection(db, 'notifications')), {
+        toUid: current.uid, type: 'report_submitted',
+        fromName: 'You', wishlistId, wishlistTitle: w?.title || '',
+        contributionId, amount: c?.amount || 0,
+        read: true, createdAt: getServerTime()
+      });
+    } catch (e) { onError(e); }
+  }
+
   return { id: ref.id };
+}
+
+export function subscribeReportsForUser(uid, callback) {
+  if (!uid) return () => {};
+  const q = query(collection(db, 'reports'), where('reportedBy', '==', uid));
+  return onSnapshot(q, snap => {
+    const list = snapToArray(snap);
+    list.sort((a, b) => {
+      const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
+      const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
+      return tb - ta;
+    });
+    callback(list);
+  }, err => { onError(err); callback([]); });
 }
 
 // --- User Profile ---
@@ -231,20 +461,24 @@ export async function saveUserProfile(uid, data) {
   await setDoc(doc(db, 'users', uid), data, { merge: true });
 }
 
-// --- Stats ---
-export async function getStats() {
-  const [wlSnap, cSnap] = await Promise.all([
-    getDocs(collection(db, 'wishlists')),
-    getDocs(collection(db, 'contributions'))
-  ]);
-  const wl = snapToArray(wlSnap);
-  return {
-    totalWishes: wl.length,
-    activeWishes: wl.filter(w => w.status === 'active' || !w.status).length,
-    completedWishes: wl.filter(w => w.status === 'completed').length,
-    totalRaised: wl.reduce((s, w) => s + (w.raised || 0), 0),
-    contributorCount: cSnap.size
-  };
+// Creates / refreshes the users/{uid} doc on every sign-in. Uses merge so existing
+// fields (upiId, fcmToken, reportsAccepted, banned, etc.) are preserved.
+export async function ensureUserDoc(user) {
+  if (!user?.uid) return;
+  try {
+    await setDoc(
+      doc(db, 'users', user.uid),
+      {
+        name: user.name || user.displayName || 'User',
+        email: user.email || '',
+        photo: user.photo || user.photoURL || '',
+        lastSeenAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+  } catch (e) {
+    console.error('[users] ensureUserDoc failed:', e);
+  }
 }
 
 // --- Auto-confirm stale (>24h) ---
@@ -259,44 +493,57 @@ export async function autoConfirmStale() {
     if (t > 0 && t < cutoff) stale.push(c);
   });
   if (stale.length === 0) return 0;
-  const wlUpdates = {};
   for (const c of stale) {
-    await updateDoc(doc(db, 'contributions', c.id), { status: 'confirmed' });
-    wlUpdates[c.wishlistId] = (wlUpdates[c.wishlistId] || 0) + (c.amount || 0);
-    if (c.contributorUid) {
-      const w = await getWishlist(c.wishlistId);
-      await setDoc(doc(collection(db, 'notifications')), {
-        toUid: c.contributorUid, type: 'confirmed',
-        fromName: 'System', wishlistId: c.wishlistId, wishlistTitle: w?.title || '',
-        amount: c.amount, read: false, createdAt: getServerTime()
+    const contribRef = doc(db, 'contributions', c.id);
+    const wishlistRef = doc(db, 'wishlists', c.wishlistId);
+    let title = '';
+    try {
+      await runTransaction(db, async (tx) => {
+        const cSnap = await tx.get(contribRef);
+        const wSnap = await tx.get(wishlistRef);
+        if (!cSnap.exists() || cSnap.data().status !== 'pending') return;
+        const w = wSnap.exists() ? wSnap.data() : null;
+        title = w?.title || '';
+        const amt = c.amount || 0;
+        const newRaised = (w?.raised || 0) + amt;
+        const upd = { raised: increment(amt), committed: increment(-amt) };
+        if (w && newRaised >= (w.price || 0)) upd.status = 'completed';
+        tx.update(contribRef, { status: 'confirmed' });
+        if (wSnap.exists()) tx.update(wishlistRef, upd);
       });
+    } catch (e) { onError(e); continue; }
+    if (c.contributorUid) {
+      try {
+        await setDoc(doc(collection(db, 'notifications')), {
+          toUid: c.contributorUid, type: 'confirmed',
+          fromName: 'System', wishlistId: c.wishlistId, wishlistTitle: title,
+          contributionId: c.id, amount: c.amount, read: false, createdAt: getServerTime()
+        });
+      } catch (e) { onError(e); }
     }
-  }
-  for (const [wlId, amount] of Object.entries(wlUpdates)) {
-    const w = await getWishlist(wlId);
-    if (!w) continue;
-    const newRaised = (w.raised || 0) + amount;
-    const upd = { raised: newRaised };
-    if (newRaised >= (w.price || 0)) upd.status = 'completed';
-    await updateDoc(doc(db, 'wishlists', wlId), upd);
   }
   return stale.length;
 }
 
 // --- Real-time subscriptions ---
+function onError(err) { console.error('sub err', err); }
+
 export function subscribeNotifications(uid, callback) {
   if (!uid) return () => {};
-  const q = query(collection(db, 'notifications'), where('toUid', '==', uid), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => callback(snapToArray(snap)), err => { console.error('notif sub err', err); callback([]); });
-}
-export function subscribeUnreadCount(uid, callback) {
-  if (!uid) return () => {};
-  const q = query(collection(db, 'notifications'), where('toUid', '==', uid), where('read', '==', false));
-  return onSnapshot(q, snap => callback(snap.size));
+  const q = query(collection(db, 'notifications'), where('toUid', '==', uid));
+  return onSnapshot(q, snap => {
+    const list = snapToArray(snap);
+    list.sort((a, b) => {
+      const ta = a.createdAt?.toDate?.()?.getTime() || new Date(a.createdAt).getTime() || 0;
+      const tb = b.createdAt?.toDate?.()?.getTime() || new Date(b.createdAt).getTime() || 0;
+      return tb - ta;
+    });
+    callback(list);
+  }, err => { onError(err); callback([]); });
 }
 export function subscribeWishlists(callback) {
   const q = query(collection(db, 'wishlists'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, snap => callback(snapToArray(snap)));
+  return onSnapshot(q, snap => callback(snapToArray(snap)), err => { onError(err); callback([]); });
 }
 export function subscribeMyWishlists(uid, callback) {
   if (!uid) return () => {};
@@ -309,11 +556,11 @@ export function subscribeMyWishlists(uid, callback) {
       return tb - ta;
     });
     callback(list);
-  });
+  }, err => { onError(err); callback([]); });
 }
 export function subscribeWishlist(id, callback) {
   if (!id) return () => {};
-  return onSnapshot(doc(db, 'wishlists', id), snap => callback(docToObj(snap)));
+  return onSnapshot(doc(db, 'wishlists', id), snap => callback(docToObj(snap)), err => { onError(err); callback(null); });
 }
 export function subscribeContributions(wishlistId, callback) {
   if (!wishlistId) return () => {};
@@ -326,7 +573,7 @@ export function subscribeContributions(wishlistId, callback) {
       return tb - ta;
     });
     callback(list);
-  });
+  }, err => { onError(err); callback([]); });
 }
 export function subscribePendingForUser(uid, callback) {
   if (!uid) return () => {};
@@ -339,7 +586,7 @@ export function subscribePendingForUser(uid, callback) {
       return tb - ta;
     });
     callback(list);
-  });
+  }, err => { onError(err); callback([]); });
 }
 
-export { auth, db, formatTime };
+export { auth, db, formatTime, updateDoc, doc, collection, getDoc, getDocs, serverTimestamp, writeBatch, getFirestore, increment, deleteDoc };

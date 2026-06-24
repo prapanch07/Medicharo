@@ -1,8 +1,11 @@
-import { useState, useContext } from 'react';
+import { useState, useContext, useEffect, useId, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
 import { createWishlist } from '../firebase';
 import LoginModal from './LoginModal';
+
+const MAX_IMAGE_BYTES = 3 * 1024 * 1024; // 3 MB — base64 stays under Firestore 1 MiB doc limit after data: prefix
+
 export default function CreateWishlist() {
   const { user } = useContext(UserContext);
   const showToast = useContext(ToastContext);
@@ -16,8 +19,21 @@ export default function CreateWishlist() {
   const [reason, setReason] = useState('');
   const [image, setImage] = useState('');
   const [imageFile, setImageFile] = useState(null);
+  const [upiId, setUpiId] = useState(user?.upiId || '');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const navTimerRef = useRef(null);
+
+  const titleId = useId();
+  const priceId = useId();
+  const catId = useId();
+  const linkId = useId();
+  const reasonId = useId();
+  const upiIdId = useId();
+  const nameId = useId();
+
+  useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
+
   if (!user) {
     return (
       <main id="main-content">
@@ -35,9 +51,20 @@ export default function CreateWishlist() {
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError('Image too large (max 3 MB).');
+      e.target.value = '';
+      return;
+    }
+    setError('');
     setImageFile(file);
     const reader = new FileReader();
     reader.onload = (ev) => setImage(ev.target.result);
+    reader.onerror = () => {
+      setError('Failed to read image. Try a different file.');
+      setImage('');
+      setImageFile(null);
+    };
     reader.readAsDataURL(file);
   };
 
@@ -49,16 +76,13 @@ export default function CreateWishlist() {
     if (!p || p <= 0) { setError('Enter a valid price.'); return; }
     if (!category) { setError('Select a category.'); return; }
     if (!reason || reason.length < 10) { setError('Tell your story (min 10 chars).'); return; }
-    if (!user.upiId?.includes('@')) {
-      const upi = prompt('Enter your UPI ID (e.g., name@upi):');
-      if (!upi || !upi.includes('@')) { setError('Enter a valid UPI ID.'); return; }
-      user.upiId = upi;
-    }
+    if (!upiId || !upiId.includes('@')) { setError('Enter a valid UPI ID.'); return; }
+    if (link && !/^https?:\/\//i.test(link)) { setError('Product link must start with http:// or https://'); return; }
     setSubmitting(true);
     try {
-      await createWishlist({ title: title.trim(), price: p, category, reason: reason.trim(), upiId: user.upiId, creatorName: user.name, productLink: link, image });
+      await createWishlist({ title: title.trim(), price: p, category, reason: reason.trim(), upiId, creatorName: user.name, productLink: link, image });
       showToast('🎉 Wishlist created! Share it with your community.', 'success');
-      setTimeout(() => navigate('/'), 1500);
+      navTimerRef.current = setTimeout(() => navigate('/'), 1500);
     } catch (err) {
       setError(err.message || 'Error creating wishlist.');
       setSubmitting(false);
@@ -80,17 +104,17 @@ export default function CreateWishlist() {
               <div className="form-card-title">📦 Product Details</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
                 <div className="form-group">
-                  <label className="form-label">Product Name <span style={{ color: 'var(--color-error)' }}>*</span></label>
-                  <input className="form-input" type="text" placeholder="e.g., Sony WH-1000XM5 Headphones" value={title} onChange={e => setTitle(e.target.value)} required />
+                  <label htmlFor={titleId} className="form-label">Product Name <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                  <input id={titleId} className="form-input" type="text" placeholder="e.g., Sony WH-1000XM5 Headphones" value={title} onChange={e => setTitle(e.target.value)} required />
                 </div>
                 <div className="form-row">
                   <div className="form-group">
-                    <label className="form-label">Price (₹) <span style={{ color: 'var(--color-error)' }}>*</span></label>
-                    <input className="form-input" type="number" placeholder="29990" min="1" value={price} onChange={e => setPrice(e.target.value)} required />
+                    <label htmlFor={priceId} className="form-label">Price (₹) <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                    <input id={priceId} className="form-input" type="number" placeholder="29990" min="1" value={price} onChange={e => setPrice(e.target.value)} required />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Category <span style={{ color: 'var(--color-error)' }}>*</span></label>
-                    <select className="form-input" value={category} onChange={e => setCategory(e.target.value)} required>
+                    <label htmlFor={catId} className="form-label">Category <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                    <select id={catId} className="form-input" value={category} onChange={e => setCategory(e.target.value)} required>
                       <option value="">Select</option>
                       {['Electronics','Lifestyle','Music','Furniture','Books','Sports','Fashion','Health'].map(c => (
                         <option key={c} value={c}>{c}</option>
@@ -99,8 +123,8 @@ export default function CreateWishlist() {
                   </div>
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Product Link</label>
-                  <input className="form-input" type="url" placeholder="https://amazon.in/product-link" value={link} onChange={e => setLink(e.target.value)} />
+                  <label htmlFor={linkId} className="form-label">Product Link</label>
+                  <input id={linkId} className="form-input" type="url" placeholder="https://amazon.in/product-link" value={link} onChange={e => setLink(e.target.value)} />
                 </div>
               </div>
             </div>
@@ -109,22 +133,26 @@ export default function CreateWishlist() {
               <div className="image-upload">
                 <div className="image-upload-icon">📤</div>
                 <div className="image-upload-text">{imageFile ? imageFile.name : 'Click to add a photo'}</div>
-                <div className="image-upload-hint">Optional</div>
-                <input type="file" accept="image/*" onChange={handleImageUpload} />
+                <div className="image-upload-hint">Optional · max 3 MB</div>
+                <input type="file" accept="image/*" onChange={handleImageUpload} aria-label="Product image" />
               </div>
             </div>
             <div className="form-card animate-on-enter">
               <div className="form-card-title">💌 Your Story</div>
               <div className="form-group">
-                <label className="form-label">Why do you want this? <span style={{ color: 'var(--color-error)' }}>*</span></label>
-                <textarea className="form-input" rows="5" placeholder="Share your story..." value={reason} onChange={e => setReason(e.target.value)} required></textarea>
+                <label htmlFor={reasonId} className="form-label">Why do you want this? <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                <textarea id={reasonId} className="form-input" rows="5" placeholder="Share your story..." value={reason} onChange={e => setReason(e.target.value)} required></textarea>
               </div>
             </div>
             <div className="form-card animate-on-enter">
               <div className="form-card-title">💳 UPI Details</div>
               <div className="form-group">
-                <label className="form-label">Your Name <span style={{ color: 'var(--color-error)' }}>*</span></label>
-                <input className="form-input" type="text" value={user.name} disabled />
+                <label htmlFor={nameId} className="form-label">Your Name <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                <input id={nameId} className="form-input" type="text" value={user.name} disabled />
+              </div>
+              <div className="form-group">
+                <label htmlFor={upiIdId} className="form-label">UPI ID <span style={{ color: 'var(--color-error)' }}>*</span></label>
+                <input id={upiIdId} className="form-input" type="text" placeholder="e.g., name@paytm" value={upiId} onChange={e => setUpiId(e.target.value)} required />
               </div>
             </div>
             <button type="submit" className="btn btn-primary btn-lg btn-full animate-on-enter" disabled={submitting} style={{ fontSize: 'var(--text-base)' }}>

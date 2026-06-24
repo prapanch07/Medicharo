@@ -1,29 +1,39 @@
-import { useState, useEffect, useContext } from 'react';
+import { useState, useEffect, useContext, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { UserContext, ToastContext } from '../App';
 import { subscribeWishlist, subscribeContributions, getCreatorDisplay, confirmContribution, rejectContribution, formatTime } from '../firebase';
 import DonateModal from './DonateModal';
 import LoginModal from './LoginModal';
 import ReportModal from './ReportModal';
+import { ConfirmDialog } from './Modal';
 
 export default function Detail() {
   const { id } = useParams();
-  const { user } = useContext(UserContext);
+  const { user, userReports } = useContext(UserContext);
   const showToast = useContext(ToastContext);
+
+  const reportByContribId = useMemo(() => {
+    const m = new Map();
+    (userReports || []).forEach(r => { if (r.contributionId) m.set(r.contributionId, r); });
+    return m;
+  }, [userReports]);
 
   const [w, setW] = useState(null);
   const [wlLoading, setWlLoading] = useState(true);
+  const [wlNotFound, setWlNotFound] = useState(false);
   const [contribs, setContribs] = useState([]);
   const [creator, setCreator] = useState(null);
   const [creatorLoading, setCreatorLoading] = useState(true);
   const [showDonate, setShowDonate] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [reportData, setReportData] = useState(null);
+  const [pendingReject, setPendingReject] = useState(null);
 
   useEffect(() => {
     const unsub1 = subscribeWishlist(id, wl => {
-      if (!wl) { showToast('Wishlist not found', 'error'); return; }
+      if (!wl) { setWlNotFound(true); setWlLoading(false); return; }
       setW(wl);
+      setWlNotFound(false);
       setWlLoading(false);
     });
     const unsub2 = subscribeContributions(id, list => {
@@ -34,7 +44,12 @@ export default function Detail() {
 
   useEffect(() => {
     if (w) {
-      getCreatorDisplay(w.creatorUid).then(c => { setCreator(c); setCreatorLoading(false); });
+      let cancelled = false;
+      getCreatorDisplay(w.creatorUid).then(c => {
+        if (cancelled) return;
+        setCreator(c); setCreatorLoading(false);
+      });
+      return () => { cancelled = true; };
     }
   }, [w]);
 
@@ -42,8 +57,9 @@ export default function Detail() {
     try { await confirmContribution(contribId, id); showToast('✅ Payment confirmed!', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
   };
-  const handleReject = async (contribId) => {
-    if (!confirm('Reject this payment? The contributor will be notified.')) return;
+  const handleReject = async () => {
+    const contribId = pendingReject;
+    setPendingReject(null);
     try { await rejectContribution(contribId, id); showToast('Payment rejected', 'success'); }
     catch (e) { showToast(e.message, 'error'); }
   };
@@ -59,7 +75,7 @@ export default function Detail() {
   };
 
   if (wlLoading) return <main id="main-content"><div className="loader-inline" style={{ justifyContent: 'center', paddingTop: '120px' }}><span className="spinner"></span> Loading wishlist...</div></main>;
-  if (!w) return <main id="main-content"><div className="empty-state" style={{ paddingTop: '120px' }}><div className="empty-state-icon">⚠️</div><div className="empty-state-title">Not found</div><Link to="/" className="btn btn-primary" style={{ marginTop: '1rem' }}>Go Home</Link></div></main>;
+  if (wlNotFound || !w) return <main id="main-content"><div className="empty-state" style={{ paddingTop: '120px' }}><div className="empty-state-icon">⚠️</div><div className="empty-state-title">Wishlist not found</div><div className="empty-state-text">It may have been removed or the link is broken.</div><Link to="/" className="btn btn-primary" style={{ marginTop: '1rem' }}>Go Home</Link></div></main>;
 
   const pct = w.price > 0 ? Math.round((w.raised / w.price) * 100) : 0;
   const rem = Math.max(0, (w.price || 0) - (w.raised || 0));
@@ -131,7 +147,7 @@ export default function Detail() {
                     </div>
                     <div className="confirm-actions">
                       <button className="btn btn-success btn-sm" onClick={() => handleConfirm(c.id)}>✅ Confirm</button>
-                      <button className="btn btn-outline btn-sm" onClick={() => handleReject(c.id)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
+                      <button className="btn btn-outline btn-sm" onClick={() => setPendingReject(c.id)} style={{ color: 'var(--color-error)' }}>✕ Reject</button>
                     </div>
                   </div>
                 ))}
@@ -166,15 +182,15 @@ export default function Detail() {
               <div className="sidebar-card-title">Recent Contributors ❤️</div>
               {wlLoading ? (
                 <div className="loader-inline"><span className="spinner"></span></div>
-              ) : contribs.filter(c => c.status !== 'rejected').length === 0 ? (
+              ) : contribs.filter(c => c.status === 'confirmed').length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--color-text-muted)', fontSize: 'var(--text-sm)' }}>
                   Be the first to contribute!
                 </div>
               ) : (
-                contribs.filter(c => c.status !== 'rejected').slice(0, 5).map(c => (
+                contribs.filter(c => c.status === 'confirmed').slice(0, 5).map(c => (
                   <div key={c.id} className="contribution-item">
                     <div className="contribution-info">
-                      <div className="contribution-name">{c.contributorName} {c.status === 'confirmed' ? '✅' : '⏳'}</div>
+                      <div className="contribution-name">{c.contributorName} ✅</div>
                       {c.message && <div className="contribution-message">{c.message}</div>}
                       <div className="contribution-time">{formatTime(c.createdAt)}</div>
                     </div>
@@ -182,15 +198,38 @@ export default function Detail() {
                   </div>
                 ))
               )}
-              {user && contribs.filter(c => c.status === 'rejected' && c.contributorUid === user.uid).map(c => (
-                <div key={c.id} className="contribution-item rejected-contribution">
-                  <div className="contribution-info">
-                    <div className="contribution-name" style={{ color: 'var(--color-error)' }}>⚠️ Your contribution was rejected</div>
-                    <div className="contribution-time">{formatTime(c.createdAt)}</div>
+              {user && contribs.filter(c => c.status === 'rejected' && c.contributorUid === user.uid).map(c => {
+                const report = reportByContribId.get(c.id);
+                const isOpen = report && report.status === 'open';
+                const isAccepted = report && (report.status === 'accepted' || report.status === 'closed');
+                const isRejected = report && report.status === 'rejected';
+                return (
+                  <div key={c.id} className="contribution-item rejected-contribution">
+                    <div className="contribution-info">
+                      <div className="contribution-name" style={{ color: 'var(--color-error)' }}>⚠️ Your contribution was rejected</div>
+                      <div className="contribution-time">{formatTime(c.createdAt)}</div>
+                    </div>
+                    {!report && (
+                      <button className="btn btn-sm btn-outline" onClick={() => setReportData({ contributionId: c.id, wishlistId: id })} style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--color-error)' }}>🚩 Report Issue</button>
+                    )}
+                    {isOpen && (
+                      <div style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '0.4rem 0.6rem', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-secondary)', color: 'var(--color-text-muted)' }}>
+                        ⏳ Report submitted — awaiting admin review
+                      </div>
+                    )}
+                    {isAccepted && (
+                      <div style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '0.4rem 0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(52, 168, 83, 0.1)', color: 'var(--color-success)' }}>
+                        ✅ Admin approved your report
+                      </div>
+                    )}
+                    {isRejected && (
+                      <div style={{ flexShrink: 0, fontSize: 'var(--text-xs)', padding: '0.4rem 0.6rem', borderRadius: 'var(--radius-md)', background: 'rgba(234, 67, 53, 0.1)', color: 'var(--color-error)' }}>
+                        ❌ Admin rejected your report
+                      </div>
+                    )}
                   </div>
-                  <button className="btn btn-sm btn-outline" onClick={() => setReportData({ contributionId: c.id, wishlistId: id })} style={{ flexShrink: 0, fontSize: 'var(--text-xs)', color: 'var(--color-error)' }}>🚩 Report Issue</button>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {rem > 0 && (
@@ -217,6 +256,17 @@ export default function Detail() {
       {showLogin && <LoginModal onClose={() => { setShowLogin(false); }} onSuccess={handleLoginSuccess} />}
       {showDonate && <DonateModal wishlistId={id} onClose={() => setShowDonate(false)} />}
       {reportData && <ReportModal {...reportData} onClose={() => setReportData(null)} />}
+      {pendingReject && (
+        <ConfirmDialog
+          open
+          title="Reject this payment?"
+          message="The contributor will be notified."
+          confirmLabel="Reject"
+          confirmTone="danger"
+          onConfirm={handleReject}
+          onClose={() => setPendingReject(null)}
+        />
+      )}
     </main>
   );
 }
