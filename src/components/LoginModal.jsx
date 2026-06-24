@@ -1,6 +1,6 @@
 import { useState, useContext, useId } from 'react';
 import { UserContext } from '../App';
-import { signInWithGoogle } from '../firebase';
+import { signInWithGoogle, ensureUserDoc } from '../firebase';
 import Modal from './Modal';
 
 export default function LoginModal({ onClose, onSuccess }) {
@@ -10,7 +10,9 @@ export default function LoginModal({ onClose, onSuccess }) {
   const titleId = useId();
 
   const handleSuccess = (u) => {
-    setUser(u ? { uid: u.uid, name: u.displayName || 'User', email: u.email, photo: u.photoURL } : null);
+    const usr = u ? { uid: u.uid, name: u.displayName || 'User', email: u.email, photo: u.photoURL } : null;
+    setUser(usr);
+    if (usr) ensureUserDoc(usr);
     onSuccess?.();
   };
 

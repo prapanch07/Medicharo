@@ -8,7 +8,6 @@ import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc,
   query, where, orderBy, serverTimestamp, writeBatch, onSnapshot, increment, runTransaction
 } from 'firebase/firestore';
-import { getMessaging, getToken as getFcmTokenRaw, onMessage, isSupported as isMessagingSupported } from 'firebase/messaging';
 
 const env = import.meta.env;
 const firebaseConfig = {
@@ -21,10 +20,6 @@ const firebaseConfig = {
   measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || "G-BFTNC087T3"
 };
 
-// Public VAPID key for FCM web push. Hardcoded as a fallback so the app works
-// out of the box without .env.local — env var overrides this if set.
-const VAPID_KEY = env.VITE_FIREBASE_VAPID_KEY ||
-  "BBQVp5pRullW6zfhW7pDmxBO7y379POFnIF675d4nUuQZDm2qftgteo0Q_JjF7Ky5nVkNWuZDOyCrl1SZvLJLqo";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -51,101 +46,6 @@ function formatTime(st) {
 function isValidHttpUrl(s) {
   if (!s) return true;
   return /^https?:\/\//i.test(s);
-}
-
-// --- Firebase Cloud Messaging ---
-let _messagingInstance = null;
-let _messagingChecked = false;
-
-async function getMessagingInstance() {
-  if (_messagingChecked) return _messagingInstance;
-  _messagingChecked = true;
-  try {
-    if (!(await isMessagingSupported())) {
-      console.warn('[FCM] Not supported in this browser.');
-      return null;
-    }
-    _messagingInstance = getMessaging(app);
-    return _messagingInstance;
-  } catch (e) {
-    console.error('[FCM] init failed:', e);
-    return null;
-  }
-}
-
-// Request permission (if needed), register the SW, fetch the token, log it, and
-// persist it to users/{uid}.fcmToken so a server can later push to this device.
-// Throws an Error with a descriptive message on failure (caller should catch and surface).
-export async function getAndLogFcmToken() {
-  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
-    throw new Error('Service workers are not available in this browser.');
-  }
-
-  const messaging = await getMessagingInstance();
-  if (!messaging) {
-    throw new Error('Firebase Cloud Messaging is not supported in this browser.');
-  }
-
-  if (typeof Notification === 'undefined') {
-    throw new Error('Browser Notification API is not available.');
-  }
-  if (Notification.permission === 'denied') {
-    throw new Error('Notification permission is blocked. Reset it in the browser site settings.');
-  }
-  if (Notification.permission !== 'granted') {
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      throw new Error('Notification permission not granted (state: ' + perm + ').');
-    }
-  }
-
-  let reg;
-  try {
-    reg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-  } catch (e) {
-    throw new Error('Service worker registration failed: ' + (e?.message || e));
-  }
-
-  let token;
-  try {
-    token = await getFcmTokenRaw(messaging, {
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: reg
-    });
-  } catch (e) {
-    throw new Error('FCM getToken() failed: ' + (e?.code || e?.message || e));
-  }
-
-  if (!token) {
-    throw new Error('FCM returned an empty token. Likely causes: Cloud Messaging is not enabled on this Firebase project, or the VAPID key does not match this project.');
-  }
-
-  console.log('[FCM] Token:', token);
-
-  // Best-effort save to user doc so the backend can target this device.
-  const u = getCurrentUser();
-  if (u?.uid) {
-    try {
-      await setDoc(
-        doc(db, 'users', u.uid),
-        { fcmToken: token, fcmTokenUpdatedAt: serverTimestamp() },
-        { merge: true }
-      );
-    } catch (e) { console.error('[FCM] failed to save token to user doc:', e); }
-  }
-
-  return token;
-}
-
-// Foreground message listener — logs payloads when the app tab is open.
-// Returns an unsubscribe function.
-export async function subscribeFcmForegroundMessages(callback) {
-  const messaging = await getMessagingInstance();
-  if (!messaging) return () => {};
-  return onMessage(messaging, payload => {
-    console.log('[FCM] Foreground message received:', payload);
-    try { callback?.(payload); } catch (e) { console.error('[FCM] callback failed:', e); }
-  });
 }
 
 async function assertNotBanned(uid) {
@@ -559,6 +459,26 @@ export async function getCreatorDisplay(uid) {
 }
 export async function saveUserProfile(uid, data) {
   await setDoc(doc(db, 'users', uid), data, { merge: true });
+}
+
+// Creates / refreshes the users/{uid} doc on every sign-in. Uses merge so existing
+// fields (upiId, fcmToken, reportsAccepted, banned, etc.) are preserved.
+export async function ensureUserDoc(user) {
+  if (!user?.uid) return;
+  try {
+    await setDoc(
+      doc(db, 'users', user.uid),
+      {
+        name: user.name || user.displayName || 'User',
+        email: user.email || '',
+        photo: user.photo || user.photoURL || '',
+        lastSeenAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+  } catch (e) {
+    console.error('[users] ensureUserDoc failed:', e);
+  }
 }
 
 // --- Auto-confirm stale (>24h) ---

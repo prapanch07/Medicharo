@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, createContext, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, createContext, useRef, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { onAuthChanged, autoConfirmStale, subscribeNotifications, subscribeReportsForUser, getAndLogFcmToken, subscribeFcmForegroundMessages } from './firebase';
+import { onAuthChanged, autoConfirmStale, subscribeNotifications, subscribeReportsForUser, ensureUserDoc } from './firebase';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import Home from './components/Home';
@@ -26,16 +26,42 @@ function RouteFallback() {
   );
 }
 
+// IMPORTANT: AppShell is declared at module scope (NOT inside App). React identifies
+// components by reference; declaring it inside App would create a new function on every
+// render, and React would unmount + remount the entire UI subtree each time — wiping
+// Navbar's `showNotifs` state, scroll position, modal open state, etc., on every Firestore
+// subscription update. Stable top-level reference means App re-renders just propagate
+// props/context to AppShell without remounting.
+function AppShell({ theme, toggleTheme, toast, clearToast }) {
+  const loc = useLocation();
+  const isAdmin = loc.pathname === '/adminReport';
+  return (
+    <div className="app-wrapper">
+      {!isAdmin && <Navbar toggleTheme={theme === 'dark' ? 'light' : 'dark'} onToggleTheme={toggleTheme} />}
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/wishlist/:id" element={<Detail />} />
+          <Route path="/create" element={<CreateWishlist />} />
+          <Route path="/profile" element={<Profile />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
+          <Route path="/adminReport" element={<AdminReport />} />
+        </Routes>
+      </Suspense>
+      {!isAdmin && <Footer />}
+      {!isAdmin && <Onboarding />}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={clearToast} />}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [userReports, setUserReports] = useState([]);
   const [toast, setToast] = useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('mc-theme') || 'light');
-  const [notifPerm, setNotifPerm] = useState(localStorage.getItem('mc-notif-perm'));
 
-  const lastNotifIdRef = useRef(null);
-  const initialNotifLoadRef = useRef(true);
   const toastTimerRef = useRef(null);
 
   useEffect(() => {
@@ -49,34 +75,15 @@ export default function App() {
     const unsubAuth = onAuthChanged(u => {
       const usr = u ? { uid: u.uid, name: u.displayName || 'User', email: u.email, photo: u.photoURL } : null;
       setUser(usr);
+      if (usr) ensureUserDoc(usr);
     });
     return () => { unsubAuth(); };
   }, []);
 
   useEffect(() => {
     if (!user) { setNotifications([]); return; }
-    initialNotifLoadRef.current = true;
-    const unsub = subscribeNotifications(user.uid, list => {
-      setNotifications(list);
-      if (initialNotifLoadRef.current) {
-        initialNotifLoadRef.current = false;
-        if (list.length > 0) lastNotifIdRef.current = list[0].id;
-        return;
-      }
-      if (notifPerm !== 'granted' || list.length === 0) return;
-      const latest = list[0];
-      if (latest.id !== lastNotifIdRef.current) {
-        lastNotifIdRef.current = latest.id;
-        if (document.visibilityState === 'visible') return;
-        if (!('Notification' in window)) return;
-        const title = latest.type === 'new_contribution'
-          ? '💰 ' + latest.fromName + ' contributed!'
-          : (latest.type === 'confirmed' ? '✅ Payment confirmed' : '⚠️ Payment rejected');
-        try { new Notification(title, { body: '₹' + latest.amount + ' · ' + latest.wishlistTitle }); } catch {}
-      }
-    });
-    return unsub;
-  }, [user, notifPerm]);
+    return subscribeNotifications(user.uid, setNotifications);
+  }, [user]);
 
   // Reports filed by the current user — used by Detail.jsx (status badges)
   // and Profile.jsx (activity log).
@@ -93,66 +100,40 @@ export default function App() {
     autoConfirmStale().catch(() => {});
   }, [user]);
 
-  // Fetch + log FCM token once the user is signed in and has granted notification
-  // permission. Saves the token to users/{uid}.fcmToken so a server can target this device.
-  useEffect(() => {
-    if (!user || notifPerm !== 'granted') return;
-    getAndLogFcmToken().catch(err => console.warn('[FCM] auto-init skipped:', err.message));
-    let unsub;
-    subscribeFcmForegroundMessages().then(fn => { unsub = fn; });
-    return () => { if (unsub) unsub(); };
-  }, [user, notifPerm]);
-
-  // Ask notification permission after onboarding
-  useEffect(() => {
-    const onboardingDone = localStorage.getItem('mc-onboarding');
-    if (onboardingDone && !notifPerm && 'Notification' in window) {
-      Notification.requestPermission().then(perm => {
-        localStorage.setItem('mc-notif-perm', perm);
-        setNotifPerm(perm);
-      });
-    }
-  }, [notifPerm]);
-
   const showToast = useCallback((message, type = 'success') => {
     setToast({ message, type });
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
+  const clearToast = useCallback(() => setToast(null), []);
+
   useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
-  const unreadCount = notifications.reduce((n, x) => n + (x.read ? 0 : 1), 0);
+  const unreadCount = useMemo(
+    () => notifications.reduce((n, x) => n + (x.read ? 0 : 1), 0),
+    [notifications]
+  );
+
   const refreshUnread = useCallback(() => {}, []);
 
-  function Layout() {
-    const loc = useLocation();
-    const isAdmin = loc.pathname === '/adminReport';
-    return (
-      <div className="app-wrapper">
-        {!isAdmin && <Navbar toggleTheme={theme === 'dark' ? 'light' : 'dark'} onToggleTheme={toggleTheme} />}
-        <Suspense fallback={<RouteFallback />}>
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/wishlist/:id" element={<Detail />} />
-            <Route path="/create" element={<CreateWishlist />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/notifications" element={<NotificationsPage />} />
-            <Route path="/adminReport" element={<AdminReport />} />
-          </Routes>
-        </Suspense>
-        {!isAdmin && <Footer />}
-        {!isAdmin && <Onboarding />}
-        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-      </div>
-    );
-  }
+  // Memoize the context value so consumers don't re-render when unrelated App state
+  // (toast, theme) changes. Only re-emits a new value when one of these fields actually
+  // changes.
+  const userContextValue = useMemo(() => ({
+    user, setUser, unreadCount, notifications, userReports, refreshUnread
+  }), [user, unreadCount, notifications, userReports, refreshUnread]);
 
   return (
-    <UserContext.Provider value={{ user, setUser, unreadCount, notifications, userReports, refreshUnread }}>
+    <UserContext.Provider value={userContextValue}>
       <ToastContext.Provider value={showToast}>
         <BrowserRouter>
-          <Layout />
+          <AppShell
+            theme={theme}
+            toggleTheme={toggleTheme}
+            toast={toast}
+            clearToast={clearToast}
+          />
         </BrowserRouter>
       </ToastContext.Provider>
     </UserContext.Provider>
